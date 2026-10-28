@@ -156,16 +156,7 @@ struct ComposeView: View {
                 Spacer(minLength: 8)
                 if model.draft.posts[model.activeIndex].hasContent {
                     CharacterRing(count: TweetLength.count(model.draft.posts[model.activeIndex].text))
-                    Rectangle().fill(Theme.border).frame(width: 1, height: 30).padding(.horizontal, 12)
-                    Button { model.addPost() } label: {
-                        ComposerIcon(kind: .plus, size: 17)
-                            .frame(width: 23, height: 23)
-                            .overlay(Circle().stroke(Theme.border, lineWidth: 1))
-                    }
-                    .foregroundStyle(Theme.blue).buttonStyle(.plain)
-                    .disabled(model.draft.posts.last?.valid != true)
-                    .help("Add another post (⌘⇧Return)").accessibilityLabel("Add another post")
-                    .padding(.trailing, 12)
+                        .padding(.trailing, 12)
                 }
                 Button(model.draft.posts.count > 1 ? "Post all" : "Post") { model.prepareHandoff() }
                     .buttonStyle(PillButtonStyle()).disabled(!model.canPost)

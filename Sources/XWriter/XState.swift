@@ -221,13 +221,6 @@ final class ComposerModel: ObservableObject {
         if !save() { draft = previousDraft; drafts = previousDrafts; activePostID = draft.posts[0].id }
     }
 
-    func addPost() {
-        guard draft.posts.last?.valid == true else { return }
-        let post = Post()
-        draft.posts.append(post)
-        activePostID = post.id
-    }
-
     func removePost(_ id: UUID) {
         guard draft.posts.count > 1 else { return }
         draft.posts.removeAll { $0.id == id }

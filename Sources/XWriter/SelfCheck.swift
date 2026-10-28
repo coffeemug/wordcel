@@ -152,15 +152,23 @@ enum SelfCheck {
                     "closing drawer never changes the composer viewport size or position")
             require(offsets.allSatisfy { abs($0.x - offset.x) < 1 && abs($0.y - offset.y) < 1 },
                     "closing drawer never changes scroll position")
+            let removedShortcut = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [.command, .shift],
+                                                   timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                                                   context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36)!
+            NSApp.postEvent(removedShortcut, atStart: false)
+            await settle()
+            require(model.draft.posts.count == 1 && !model.showHandoff, "retired thread shortcut neither adds a post nor opens publishing")
             editor.selectAll(nil)
             editor.insertText("First post", replacementRange: editor.selectedRange())
             await settle()
             require(abs(window.frame.height - initialFrame.height) < 2, "deleting text shrinks the window")
-            model.addPost()
+            let legacyPost = Post()
+            model.draft.posts.append(legacyPost)
+            model.activePostID = legacyPost.id
             await settle()
-            require(model.draft.posts.count == 2, "thread adds an editor")
+            require(model.draft.posts.count == 2, "existing threads still render multiple editors")
             guard let second = model.activeEditor else { exit(1) }
-            require(second !== editor && window.firstResponder === second, "new thread post receives focus")
+            require(second !== editor && window.firstResponder === second, "existing thread posts can receive focus")
             second.insertText("Second post", replacementRange: NSRange(location: NSNotFound, length: 0))
             require(model.draft.posts[1].text == "Second post" && model.canPost, "second editor binds to its own post")
             model.removePost(model.draft.posts[1].id)
@@ -369,7 +377,7 @@ enum SelfCheck {
             check(restored.synonymModel == .sonnet && restored.synonymEffort == .high, "model and reasoning restore from a fresh preferences instance")
             check(restored.draft.posts[0].text == "Revised draft", "restore text")
             check(restored.draft.audience == .following && restored.draft.plannedDate != nil, "restore metadata")
-            model.addPost()
+            model.draft.posts.append(Post())
             check(model.draft.posts.count == 2 && !model.canPost, "empty thread post prevents handoff")
             model.draft.posts[1].text = "Second post"
             check(model.canPost, "completed thread allows handoff")

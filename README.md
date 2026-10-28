@@ -21,7 +21,7 @@ The build produces an ad-hoc signed `XWriter.app` in the project directory. You 
 - Native text selection, undo/redo, spell checking, emoji picker, and highlighting for links, hashtags, and mentions.
 - On-demand Claude synonyms grouped by Latin and Germanic roots, with click-to-replace suggestions.
 - Up to four image attachments from the file picker, clipboard, or drag and drop. GIF files are supported; the inline preview is static. Images can have editable ALT descriptions.
-- Thread composition, poll drafting, and an optional planned date.
+- Poll drafting and an optional planned date.
 - Automatic local draft saving, restoration, and deletion in a right-side drawer. The drawer icon widens the window to keep the composer alongside your drafts. Closing the window keeps the draft; clicking the Dock icon reopens it.
 - The build bundles `me.png` as your default avatar. Custom profile photo: click the avatar or use View → Choose Profile Photo.
 
@@ -29,7 +29,7 @@ The build produces an ad-hoc signed `XWriter.app` in the project directory. You 
 
 **Post** opens a review sheet. **Open on X** hands the first post's text to X in your default browser, where you review and publish it. For long posts, **Copy & open X** copies the text and opens the X composer; paste with ⌘V. Nothing is posted automatically. The draft remains saved locally.
 
-Images, ALT descriptions, polls, reply permissions, and planned dates are draft metadata; they must be added on X. The review sheet lets you export images and copy ALT descriptions. For threads, publish the first post and copy the remaining posts into replies on X. Planned dates do not trigger automatic publishing or reminders. Location is disabled because this app has no X account integration.
+Images, ALT descriptions, polls, reply permissions, and planned dates are draft metadata; they must be added on X. The review sheet lets you export images and copy ALT descriptions. Previously saved threads remain available; publish their first post and copy the remaining posts into replies on X. New threads cannot be created. Planned dates do not trigger automatic publishing or reminders. Location is disabled because this app has no X account integration.
 
 The character counter approximates X's weighting, including CJK characters, combined emoji, Unicode normalization, and 23-character web links. URL detection uses Apple's `NSDataDetector`, so unusual URLs can differ from X's parser. X's own editor makes the final validation.
 
@@ -54,7 +54,6 @@ If macOS intercepts **⌃Space** to switch input sources, change or disable that
 | ⌘D | Toggle the drafts drawer |
 | ⌘O | Add photos |
 | ⌘Return | Review for publishing on X |
-| ⌘⇧Return | Add another post to the thread |
 | ⌃Space | Find single-word alternatives for the word at the cursor or selected phrase |
 | ⌃⌘Space | Emoji & Symbols |
 | ⌘⇧D | Toggle light/dark appearance |

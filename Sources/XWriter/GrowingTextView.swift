@@ -156,7 +156,10 @@ final class ComposerTextView: NSTextView {
 
     override func keyDown(with event: NSEvent) {
         if handleSynonymShortcut(event) { return }
-        if event.modifierFlags.contains(.command) && event.keyCode == 36 { onSubmit?(); return }
+        if event.modifierFlags.intersection([.command, .control, .option, .shift]) == .command && event.keyCode == 36 {
+            onSubmit?()
+            return
+        }
         super.keyDown(with: event)
         revealSelectionAfterLayout()
     }

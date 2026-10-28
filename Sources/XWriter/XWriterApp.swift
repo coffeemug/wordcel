@@ -58,7 +58,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var composerWidthBeforeDrawer: CGFloat?
     private var frameAutosaveNameBeforeDrawer: NSWindow.FrameAutosaveName?
     private var isResizingDraftsDrawer = false
-    private var escapeMonitor: Any?
+    private var keyboardMonitor: Any?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if let index = CommandLine.arguments.firstIndex(of: "--snapshot"), CommandLine.arguments.count > index + 1 {
@@ -109,9 +109,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.center()
         if !isTesting { window.setFrameAutosaveName("XWriterComposer") }
         window.makeKeyAndOrderFront(nil)
-        escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self, event.window === self.window, event.keyCode == 53,
-                  self.model.synonyms.state != .idle else { return event }
+        keyboardMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self, event.window === self.window else { return event }
+            // AppKit otherwise matches the retired thread shortcut to Command-Return's publishing action.
+            if event.keyCode == 36 && event.modifierFlags.intersection([.command, .control, .option, .shift]) == [.command, .shift] {
+                return nil
+            }
+            guard event.keyCode == 53, self.model.synonyms.state != .idle else { return event }
             self.model.synonyms.dismiss()
             return nil
         }
@@ -216,7 +220,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return alert.runModal() == .alertSecondButtonReturn ? .terminateNow : .terminateCancel
     }
     func applicationWillTerminate(_ notification: Notification) {
-        if let escapeMonitor { NSEvent.removeMonitor(escapeMonitor) }
+        if let keyboardMonitor { NSEvent.removeMonitor(keyboardMonitor) }
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         window.makeKeyAndOrderFront(nil)
@@ -240,7 +244,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         item("Toggle Drafts", action: #selector(drafts), key: "d", in: file)
         file.addItem(.separator())
         item("Add Photos…", action: #selector(addPhotos), key: "o", in: file)
-        item("Add Another Post", action: #selector(addPost), key: "\r", modifiers: [.command, .shift], in: file)
         item("Continue on X…", action: #selector(post), key: "\r", in: file)
         file.addItem(.separator())
         item("Close", action: #selector(close), key: "w", in: file)
@@ -293,7 +296,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc private func saveDraft() { if model.save() { model.notify("Draft saved") } }
     @objc private func drafts() { model.toggleDrafts(); show() }
     @objc private func addPhotos() { model.pickImages() }
-    @objc private func addPost() { model.addPost() }
     @objc private func findSynonyms() {
         guard let editor = window.firstResponder as? ComposerTextView else {
             model.notify("Place the cursor in a post to find synonyms.")
