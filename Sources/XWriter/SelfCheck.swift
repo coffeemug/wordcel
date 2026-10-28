@@ -385,9 +385,10 @@ enum SelfCheck {
     @MainActor private static func synonymInterface(model: ComposerModel, window: NSWindow, service: SynonymStub,
                                                     check: (Bool, String) -> Void) async {
         func settle() async { try? await Task.sleep(for: .milliseconds(300)) }
-        @MainActor func key(_ characters: String, code: UInt16, modifiers: NSEvent.ModifierFlags = .control) -> NSEvent {
+        @MainActor func key(_ characters: String, code: UInt16, modifiers: NSEvent.ModifierFlags = .control,
+                            in targetWindow: NSWindow? = nil) -> NSEvent {
             NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers,
-                            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil,
+                            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: (targetWindow ?? window).windowNumber, context: nil,
                             characters: characters, charactersIgnoringModifiers: characters, isARepeat: false, keyCode: code)!
         }
         @MainActor func click(at location: NSPoint, in targetWindow: NSWindow? = nil) async {
@@ -438,17 +439,23 @@ enum SelfCheck {
             return
         }
         await click(at: NSPoint(x: 70, y: pickerContent.bounds.height - 70), in: picker)
-        check(model.synonymModel == .opus && !picker.isVisible, "model picker selects Opus and closes")
+        check(model.synonymModel == .opus && picker.isVisible, "model picker remains open after selecting Opus")
         check(window.firstResponder === editor && model.synonyms.state == ready, "changing models preserves editor focus and existing synonyms")
+        await click(at: NSPoint(x: 70, y: 40), in: picker)
+        check(model.synonymEffort == .max && picker.isVisible, "reasoning can be selected without reopening the model picker")
+        check(model.synonyms.state == ready, "changing reasoning preserves existing synonyms")
+        NSApp.postEvent(key("\u{1b}", code: 53, modifiers: [], in: picker), atStart: false)
+        await settle()
+        check(!picker.isVisible && window.firstResponder === editor && model.synonyms.state == ready,
+              "Escape closes the picker without dismissing synonyms")
         let visibleWindows = Set(NSApp.windows.filter(\.isVisible).map(\.windowNumber))
         await click(at: NSPoint(x: 110, y: 82))
-        guard let effortPicker = NSApp.windows.first(where: { $0.isVisible && !visibleWindows.contains($0.windowNumber) }) else {
-            check(false, "model link reopens to choose reasoning")
+        guard let reopenedPicker = NSApp.windows.first(where: { $0.isVisible && !visibleWindows.contains($0.windowNumber) }) else {
+            check(false, "model link reopens after Escape")
             return
         }
-        await click(at: NSPoint(x: 70, y: 40), in: effortPicker)
-        check(model.synonymEffort == .max && !effortPicker.isVisible, "reasoning picker selects Max and closes")
-        check(window.firstResponder === editor && model.synonyms.state == ready, "changing reasoning preserves focus and existing synonyms")
+        await click(at: NSPoint(x: 30, y: 82))
+        check(!reopenedPicker.isVisible && model.synonyms.state == ready, "clicking outside closes the picker without dismissing synonyms")
         let restored = ComposerModel(directory: model.storage.directory, preferences: preferences(for: model.storage.directory))
         check(restored.synonymModel == .opus && restored.synonymEffort == .max, "model and reasoning picker selections persist outside the view")
 

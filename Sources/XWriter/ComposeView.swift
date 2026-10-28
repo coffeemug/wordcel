@@ -110,7 +110,7 @@ struct ComposeView: View {
         HStack {
             Button { modelPopover.toggle() } label: {
                 HStack(spacing: 5) {
-                    Image(systemName: "sparkles").font(.system(size: 13, weight: .semibold)).accessibilityHidden(true)
+                    ComposerIcon(kind: .robot, size: 16)
                     Text(model.synonymModel.title).font(.system(size: 14, weight: .bold))
                     Image(systemName: "chevron.down").font(.system(size: 10, weight: .semibold))
                 }
@@ -123,7 +123,8 @@ struct ComposeView: View {
             .accessibilityValue("\(model.synonymModel.title), \(model.synonymEffort.title) reasoning")
             .accessibilityIdentifier("synonym-model")
             .popover(isPresented: $modelPopover, arrowEdge: .bottom) {
-                ModelPicker(selection: $model.synonymModel, effort: $model.synonymEffort) { modelPopover = false }
+                ModelPicker(selection: $model.synonymModel, effort: $model.synonymEffort)
+                    .onExitCommand { modelPopover = false }
             }
             Spacer(minLength: 0)
         }

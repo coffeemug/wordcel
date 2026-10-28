@@ -4,13 +4,11 @@ import SwiftUI
 struct ModelPicker: View {
     @Binding var selection: ClaudeModel
     @Binding var effort: ClaudeEffort
-    var done: () -> Void
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             ForEach(ClaudeModel.allCases) { model in
                 option(model.title, selected: model == selection) {
                     selection = model
-                    done()
                 }
                 .accessibilityIdentifier("synonym-model-\(model.rawValue)")
             }
@@ -19,7 +17,6 @@ struct ModelPicker: View {
             ForEach(ClaudeEffort.allCases) { level in
                 option(level.title, selected: level == effort) {
                     effort = level
-                    done()
                 }
                 .accessibilityIdentifier("synonym-effort-\(level.rawValue)")
             }

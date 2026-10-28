@@ -2,7 +2,7 @@ import SwiftUI
 
 // Drawn in the same 24-point coordinate space as the web composer's icons.
 struct ComposerIcon: View {
-    enum Kind { case close, drawer, photo, gif, poll, emoji, calendar, location, plus, globe, oak }
+    enum Kind { case close, drawer, photo, gif, poll, emoji, calendar, location, plus, globe, oak, robot }
     let kind: Kind
     var size: CGFloat = 20
 
@@ -56,6 +56,15 @@ struct ComposerIcon: View {
                 p.addEllipse(in: CGRect(x: 2, y: 2, width: 20, height: 20))
                 p.addEllipse(in: CGRect(x: 7.5, y: 2, width: 9, height: 20))
                 for y in [8.0, 16.0] { p.move(to: CGPoint(x: 3, y: y)); p.addLine(to: CGPoint(x: 21, y: y)) }
+            case .robot:
+                p.addRoundedRect(in: CGRect(x: 5, y: 7, width: 14, height: 13), cornerSize: CGSize(width: 3, height: 3))
+                p.move(to: CGPoint(x: 12, y: 7)); p.addLine(to: CGPoint(x: 12, y: 3))
+                p.addEllipse(in: CGRect(x: 11, y: 1, width: 2, height: 2))
+                for x in [2.0, 19.0] {
+                    p.addRoundedRect(in: CGRect(x: x, y: 11, width: 3, height: 6), cornerSize: CGSize(width: 1, height: 1))
+                }
+                for x in [8.0, 14.0] { p.addEllipse(in: CGRect(x: x, y: 11, width: 2, height: 2)) }
+                p.move(to: CGPoint(x: 9, y: 16)); p.addLine(to: CGPoint(x: 15, y: 16))
             case .oak:
                 p.move(to: CGPoint(x: 12, y: 19))
                 p.addCurve(to: CGPoint(x: 6, y: 16), control1: CGPoint(x: 8, y: 20), control2: CGPoint(x: 4, y: 19))
