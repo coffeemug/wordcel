@@ -22,16 +22,18 @@ struct SynonymLists: Codable, Equatable {
 struct SynonymTarget {
     let text: String
     let range: NSRange
-    var word: String { (text as NSString).substring(with: range) }
+    var query: String { (text as NSString).substring(with: range) }
     var sentence: String {
         let tokenizer = NLTokenizer(unit: .sentence)
         tokenizer.string = text
         let start = String.Index(utf16Offset: range.location, in: text)
-        return String(text[tokenizer.tokenRange(at: start)]).trimmingCharacters(in: .whitespacesAndNewlines)
+        let end = text.index(before: String.Index(utf16Offset: NSMaxRange(range), in: text))
+        let sentences = tokenizer.tokenRange(at: start).lowerBound..<tokenizer.tokenRange(at: end).upperBound
+        return String(text[sentences]).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     static func capture(text: String, selection: NSRange) -> SynonymTarget? {
-        guard Range(selection, in: text) != nil else { return nil }
+        guard let selectedRange = Range(selection, in: text) else { return nil }
         let tokenizer = NLTokenizer(unit: .word)
         tokenizer.string = text
         let words = tokenizer.tokens(for: text.startIndex..<text.endIndex)
@@ -39,13 +41,19 @@ struct SynonymTarget {
             .map { NSRange($0, in: text) }
         let range = words.first { $0.location <= selection.location && selection.location < NSMaxRange($0) && NSMaxRange(selection) <= NSMaxRange($0) }
             ?? words.first { selection.length == 0 && NSMaxRange($0) == selection.location }
-        guard let range, range.length <= 100 else { return nil }
-        return SynonymTarget(text: text, range: range)
+        if let range {
+            guard range.length <= 100 else { return nil }
+            return SynonymTarget(text: text, range: range)
+        }
+        let phrase = String(text[selectedRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard phrase.unicodeScalars.contains(where: CharacterSet.letters.contains) else { return nil }
+        let phraseRange = (text as NSString).range(of: phrase, options: .literal, range: selection)
+        return SynonymTarget(text: text, range: phraseRange)
     }
 
     func matches(text: String, selection: NSRange) -> Bool {
         guard let current = Self.capture(text: text, selection: selection) else { return false }
-        return current.range == range && current.word == word
+        return current.range == range && current.query == query
     }
 
     @MainActor func matches(_ editor: ComposerTextView) -> Bool {
@@ -53,8 +61,8 @@ struct SynonymTarget {
     }
 
     func replacement(_ synonym: String) -> String {
-        if word == word.uppercased() { return synonym.uppercased() }
-        if word.first?.isUppercase == true && word.dropFirst() == word.dropFirst().lowercased() {
+        if query == query.uppercased() { return synonym.uppercased() }
+        if query.first?.isUppercase == true && query.dropFirst() == query.dropFirst().lowercased() {
             return synonym.prefix(1).uppercased() + synonym.dropFirst()
         }
         return synonym
@@ -82,7 +90,7 @@ final class SynonymController: ObservableObject {
         dismiss()
         guard !editor.hasMarkedText(),
               let target = SynonymTarget.capture(text: editor.string, selection: editor.selectedRange()) else {
-            onError?("Place the cursor in a word to find synonyms.")
+            onError?("Place the cursor in a word or select a phrase to find single-word alternatives.")
             return
         }
         let id = UUID()
@@ -105,7 +113,7 @@ final class SynonymController: ObservableObject {
                     NSApp.activate(ignoringOtherApps: true)
                     state = .loading
                 }
-                let lists = try await service.synonyms(for: target.word, in: target.sentence, model: model, effort: effort).validated()
+                let lists = try await service.synonyms(for: target.query, in: target.sentence, model: model, effort: effort).validated()
                 try Task.checkCancellation()
                 guard requestID == id else { return }
                 guard target.matches(editor) else { dismiss(); return }

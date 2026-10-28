@@ -14,7 +14,7 @@ enum SelfCheck {
                                        germanic: ["back", "bolster", "uphold", "boost", "further", "foster"])
         var authenticated = true
         var signIns = 0
-        var words: [String] = []
+        var targets: [String] = []
         var sentences: [String] = []
         var models: [ClaudeModel] = []
         var efforts: [ClaudeEffort] = []
@@ -27,8 +27,8 @@ enum SelfCheck {
             try await Task.sleep(for: .milliseconds(100))
             authenticated = true
         }
-        func synonyms(for word: String, in sentence: String, model: ClaudeModel, effort: ClaudeEffort) async throws -> SynonymLists {
-            words.append(word)
+        func synonyms(for target: String, in sentence: String, model: ClaudeModel, effort: ClaudeEffort) async throws -> SynonymLists {
+            targets.append(target)
             sentences.append(sentence)
             models.append(model)
             efforts.append(effort)
@@ -243,7 +243,7 @@ enum SelfCheck {
         let targetText = "😀 Help, help."
         let helpRange = (targetText as NSString).range(of: "Help")
         let target = SynonymTarget.capture(text: targetText, selection: NSRange(location: helpRange.location + 2, length: 0))
-        check(target?.word == "Help" && target?.range == helpRange, "synonyms target the word under a UTF-16 cursor")
+        check(target?.query == "Help" && target?.range == helpRange, "synonyms target the word under a UTF-16 cursor")
         check(target?.matches(text: targetText, selection: NSRange(location: helpRange.location, length: 0)) == true &&
               target?.matches(text: targetText, selection: NSRange(location: NSMaxRange(helpRange), length: 0)) == true &&
               target?.matches(text: targetText, selection: helpRange) == true,
@@ -259,10 +259,27 @@ enum SelfCheck {
         check(target?.replacement("assist") == "Assist", "synonym replacement preserves capitalization")
         check(SynonymTarget.capture(text: "HELP", selection: NSRange(location: 4, length: 0))?.replacement("assist") == "ASSIST",
               "synonyms support end-of-word cursors and uppercase")
-        check(SynonymTarget.capture(text: "help me", selection: NSRange(location: 0, length: 7)) == nil,
-              "synonyms reject selections spanning words")
+        let phraseText = "😀 Please lend a hand with this, then lend a hand."
+        let phraseRange = (phraseText as NSString).range(of: "lend a hand")
+        let phraseSelection = NSRange(location: phraseRange.location - 1, length: phraseRange.length + 2)
+        let phrase = SynonymTarget.capture(text: phraseText, selection: phraseSelection)
+        check(phrase?.query == "lend a hand" && phrase?.range == phraseRange && phrase?.sentence == phraseText,
+              "phrase targeting trims only outer whitespace and preserves UTF-16 replacement offsets")
+        check(phrase?.matches(text: phraseText, selection: phraseSelection) == true &&
+              phrase?.matches(text: phraseText, selection: phraseRange) == true &&
+              phrase?.matches(text: phraseText, selection: NSRange(location: phraseRange.location, length: 4)) == false,
+              "phrase results stay valid for the same target and dismiss when selecting a different target")
+        check(SynonymTarget.capture(text: "Lend a hand", selection: NSRange(location: 0, length: 11))?.replacement("assist") == "Assist" &&
+              SynonymTarget.capture(text: "LEND A HAND", selection: NSRange(location: 0, length: 11))?.replacement("assist") == "ASSIST",
+              "phrase replacement preserves initial and all-caps capitalization")
+        let acrossSentences = "Before. Lend a hand.\nHelp out. After."
+        let acrossRange = (acrossSentences as NSString).range(of: "a hand.\nHelp")
+        check(SynonymTarget.capture(text: acrossSentences, selection: acrossRange)?.sentence == "Lend a hand.\nHelp out.",
+              "context covers every selected sentence without adjacent sentences")
         check(SynonymTarget.capture(text: "  😀 123", selection: NSRange(location: 1, length: 0)) == nil,
               "synonyms reject whitespace and nonword targets")
+        check(SynonymTarget.capture(text: "  😀 123", selection: NSRange(location: 0, length: 8)) == nil,
+              "selected phrases must contain letters")
         for (text, expected) in [
             ("Earlier news. 😀 With each update add something nice. Keep it simple.", "😀 With each update add something nice."),
             ("First line.\n\nwith each update add something nice", "with each update add something nice"),
@@ -270,7 +287,7 @@ enum SelfCheck {
         ] {
             let range = (text as NSString).range(of: "update", options: .backwards)
             let target = SynonymTarget.capture(text: text, selection: NSRange(location: NSMaxRange(range), length: 0))
-            check(target?.word == "update" && target?.sentence == expected, "lookup extracts only the target sentence: \(expected)")
+            check(target?.query == "update" && target?.sentence == expected, "lookup extracts only the target sentence: \(expected)")
         }
         do {
             let response = ClaudeCommand.Result(status: 0, output: Data(#"{"type":"result","is_error":false,"structured_output":{"latin":["assist"],"germanic":["back"]}}"#.utf8))
@@ -419,7 +436,7 @@ enum SelfCheck {
         await settle()
         let ready = SynonymController.State.ready(SynonymStub.lists)
         check(model.synonyms.state == ready, "synonyms display both groups")
-        check(service.words.last == "Help" && service.sentences.last == "😀 Help, help.", "the word and its sentence are sent to Claude")
+        check(service.targets.last == "Help" && service.sentences.last == "😀 Help, help.", "the word and its sentence are sent to Claude")
         check(window.frame == frame, "synonym rows preserve the composer frame")
 
         window.makeFirstResponder(nil)
@@ -544,8 +561,40 @@ enum SelfCheck {
         editor.setSelectedRange((editor.string as NSString).range(of: "update"))
         editor.keyDown(with: key(" ", code: 49))
         await settle()
-        check(service.words.last == "update" && service.sentences.last == "With each update add something nice.",
+        check(service.targets.last == "update" && service.sentences.last == "With each update add something nice.",
               "native lookups send the selected word's sentence without adjacent sentences")
+
+        let phraseText = "😀 Please lend a hand with this, then lend a hand. Keep this sentence."
+        editor.selectAll(nil)
+        editor.insertText(phraseText, replacementRange: editor.selectedRange())
+        editor.breakUndoCoalescing()
+        editor.undoManager?.removeAllActions()
+        let phraseRange = (phraseText as NSString).range(of: "lend a hand")
+        let phraseSelection = NSRange(location: phraseRange.location - 1, length: phraseRange.length + 2)
+        editor.setSelectedRange(phraseSelection)
+        editor.keyDown(with: key(" ", code: 49))
+        await settle()
+        check(model.synonyms.state == ready && service.targets.last == "lend a hand" &&
+              service.sentences.last == "😀 Please lend a hand with this, then lend a hand.",
+              "selected phrases request single-word alternatives with sentence context")
+        await click(at: NSPoint(x: 100, y: 40))
+        let replacedPhrase = "😀 Please assist with this, then lend a hand. Keep this sentence."
+        check(editor.string == replacedPhrase && model.draft.posts[0].text == replacedPhrase,
+              "clicking a synonym replaces the whole phrase once and preserves surrounding whitespace")
+        editor.undoManager?.undo()
+        check(editor.string == phraseText, "undo restores the complete phrase")
+        editor.undoManager?.redo()
+        check(editor.string == replacedPhrase, "redo reapplies the single-word phrase replacement")
+        editor.undoManager?.undo()
+        editor.setSelectedRange(phraseSelection)
+        service.ignoreCancellation = true
+        editor.keyDown(with: key(" ", code: 49))
+        try? await Task.sleep(for: .milliseconds(20))
+        editor.setSelectedRange(NSRange(location: phraseRange.location, length: 4))
+        check(model.synonyms.state == .idle, "changing the selected phrase cancels a pending lookup")
+        await settle()
+        check(model.synonyms.state == .idle, "late phrase results cannot replace a newly selected target")
+        service.ignoreCancellation = false
 
         service.failure = ClaudeCLIError.failed("Synthetic Claude failure")
         editor.keyDown(with: key(" ", code: 49))
@@ -598,9 +647,9 @@ enum SelfCheck {
             check(try await !cli.isAuthenticated(), "signed-out CLI status requests login")
             try await cli.signIn()
             check(try await cli.isAuthenticated(), "CLI-owned sign-in is checked before lookup")
-            let sentence = #"Please "help" me with 😀 updates."#
+            let sentence = #"Please "lend a hand" with 😀 updates."#
             for (model, effort) in [(ClaudeModel.fable, ClaudeEffort.low), (.opus, .high), (.sonnet, .xhigh), (.haiku, .max), (.fable, .medium)] {
-                check(try await cli.synonyms(for: "help", in: sentence, model: model, effort: effort) == SynonymLists(latin: ["assist"], germanic: ["back"]),
+                check(try await cli.synonyms(for: "lend a hand", in: sentence, model: model, effort: effort) == SynonymLists(latin: ["assist"], germanic: ["back"]),
                       "CLI service reads structured results end to end")
                 let arguments = try String(contentsOf: fixture.appendingPathComponent("profile/arguments.txt"), encoding: .utf8).components(separatedBy: "\n")
                 let options = Array(zip(arguments, arguments.dropFirst()))
@@ -608,7 +657,7 @@ enum SelfCheck {
                       options.contains { $0.0 == "--effort" && $0.1 == effort.rawValue }, "CLI requests \(model.title) with \(effort.title) effort")
             }
             let request = try JSONDecoder().decode([String: String].self, from: Data(contentsOf: fixture.appendingPathComponent("profile/request.json")))
-            check(request == ["word": "help", "sentence": sentence], "CLI sends only the word and sentence as safely encoded JSON")
+            check(request == ["target": "lend a hand", "sentence": sentence], "CLI sends the whole phrase and its context as safely encoded JSON")
             let echo = try await ClaudeCommand().run(executable: URL(fileURLWithPath: "/bin/cat"), arguments: [],
                                                      environment: environment, input: #"{"word":"help"}"#, timeout: 5)
             check(echo.status == 0 && String(decoding: echo.output, as: UTF8.self) == #"{"word":"help"}"#, "CLI input and output are piped without a shell")
