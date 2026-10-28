@@ -7,7 +7,7 @@ struct SynonymLists: Codable, Equatable {
     var germanic: [String]
 
     func validated() throws -> SynonymLists {
-        let allowed = CharacterSet.letters.union(.nonBaseCharacters).union(CharacterSet(charactersIn: "'-\u{2019}"))
+        let allowed = CharacterSet.letters.union(.nonBaseCharacters).union(CharacterSet(charactersIn: "'\u{2019}"))
         let words = latin + germanic
         guard latin.count <= 6, germanic.count <= 6,
               words.allSatisfy({ !$0.isEmpty && $0.count <= 48 &&
