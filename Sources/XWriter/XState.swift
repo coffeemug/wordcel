@@ -77,13 +77,13 @@ struct DraftStorage {
 final class ComposerModel: ObservableObject {
     @Published var draft: Draft {
         didSet {
-            if draft.id != oldValue.id { synonyms.dismiss() }
+            if draft.id != oldValue.id { synonyms.dismiss(); highlights.dismiss() }
             else { synonyms.invalidateIfChanged(text: draft.posts.first { $0.id == activePostID }?.text) }
             queueSave()
         }
     }
     @Published var drafts: [Draft]
-    @Published var activePostID: UUID { didSet { if activePostID != oldValue { synonyms.dismiss() } } }
+    @Published var activePostID: UUID { didSet { if activePostID != oldValue { synonyms.dismiss(); highlights.dismiss() } } }
     @Published var composerWidth: CGFloat = 600
     @Published var showDrafts = false {
         didSet {
@@ -105,6 +105,8 @@ final class ComposerModel: ObservableObject {
     @Published var avatar: NSImage?
     let storage: DraftStorage
     let synonyms: SynonymController
+    let toolbarSettings: PromptToolbarSettings
+    let highlights: HighlightController
     private let preferences: UserDefaults
     private var saveWork: DispatchWorkItem?
     private var toastWork: DispatchWorkItem?
@@ -112,8 +114,10 @@ final class ComposerModel: ObservableObject {
     weak var activeEditor: ComposerTextView?
     var onContentHeightChange: ((CGFloat) -> Void)?
     var onDraftsVisibilityChange: ((Bool) -> Void)?
+    var onShowSettings: (() -> Void)?
 
-    init(directory: URL? = nil, synonymService: (any SynonymService)? = nil, preferences: UserDefaults = .standard) {
+    init(directory: URL? = nil, synonymService: (any SynonymService)? = nil,
+         highlightService: (any HighlightService)? = nil, preferences: UserDefaults = .standard) {
         self.preferences = preferences
         let savedModel = preferences.string(forKey: "synonymModel")
         synonymModel = savedModel.flatMap(ClaudeModel.init(rawValue:)) ?? .fable
@@ -122,7 +126,10 @@ final class ComposerModel: ObservableObject {
         let base = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("XWriter", isDirectory: true)
         storage = DraftStorage(directory: base)
-        synonyms = SynonymController(service: synonymService ?? ClaudeCLI(configurationDirectory: base.appendingPathComponent("claude-code")))
+        let cli = ClaudeCLI(configurationDirectory: base.appendingPathComponent("claude-code"))
+        synonyms = SynonymController(service: synonymService ?? cli)
+        highlights = HighlightController(service: highlightService ?? cli)
+        toolbarSettings = PromptToolbarSettings(preferences: preferences)
         var initial = DraftArchive()
         var readError: String?
         do { initial = try storage.read() }
@@ -143,12 +150,24 @@ final class ComposerModel: ObservableObject {
         avatar = NSImage(contentsOf: base.appendingPathComponent("avatar.png"))
             ?? Bundle.main.url(forResource: "me", withExtension: "png").flatMap { NSImage(contentsOf: $0) }
             ?? NSImage(contentsOfFile: "me.png")
-        error = readError
+        error = readError ?? toolbarSettings.error
         synonyms.onError = { [weak self] message in self?.error = message }
+        highlights.onError = { [weak self] message in self?.error = message }
+        highlights.onNotice = { [weak self] message in self?.notify(message) }
+        toolbarSettings.onChange = { [weak self] buttons in self?.highlights.configurationChanged(buttons) }
     }
 
     var activeIndex: Int { draft.posts.firstIndex(where: { $0.id == activePostID }) ?? 0 }
     var canPost: Bool { draft.posts.allSatisfy(\.valid) }
+
+    func toggleHighlights(_ button: PromptButton) {
+        guard let editor = activeEditor, editor.window != nil else {
+            error = "Place the cursor in a post to run a highlighting prompt."
+            return
+        }
+        synonyms.dismiss()
+        highlights.toggle(button, in: editor, model: synonymModel, effort: synonymEffort)
+    }
 
     func applyAppearance() {
         NSApp.appearance = appearance == "system" ? nil : NSAppearance(named: appearance == "dark" ? .darkAqua : .aqua)

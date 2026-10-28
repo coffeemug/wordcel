@@ -107,14 +107,8 @@ struct ComposeView: View {
             Rectangle().fill(Theme.border).frame(height: 1)
             HStack(spacing: 0) {
                 SynonymToolbar(controller: model.synonyms) {
-                    HStack(spacing: 0) {
-                        ToolPlaceholder(icon: .photo, label: "Image")
-                        ToolPlaceholder(icon: .gif, label: "GIF")
-                        ToolPlaceholder(icon: .poll, label: "Poll")
-                        ToolPlaceholder(icon: .emoji, label: "Emoji")
-                        ToolPlaceholder(icon: .calendar, label: "Calendar")
-                        ToolPlaceholder(icon: .location, label: "Location")
-                    }
+                    PromptToolbar(settings: model.toolbarSettings, controller: model.highlights,
+                                  toggle: model.toggleHighlights, openSettings: { model.onShowSettings?() })
                 }.padding(.leading, 44)
                 Spacer(minLength: 8)
                 if model.draft.posts[model.activeIndex].hasContent {
@@ -127,16 +121,6 @@ struct ComposeView: View {
             }
             .frame(height: 58)
         }.padding(.horizontal, 16)
-    }
-}
-
-struct ToolPlaceholder: View {
-    let icon: ComposerIcon.Kind
-    let label: String
-    var body: some View {
-        Button {} label: { ComposerIcon(kind: icon).opacity(0.4) }
-            .foregroundStyle(Theme.blue).buttonStyle(RoundButtonStyle(blue: true))
-            .disabled(true).help("\(label) (unavailable)").accessibilityLabel(label)
     }
 }
 

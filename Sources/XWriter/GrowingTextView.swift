@@ -31,6 +31,8 @@ struct GrowingTextView: NSViewRepresentable {
         view.setAccessibilityLabel("Post text")
         view.setAccessibilityIdentifier("post-editor-\(postID)")
         view.string = text
+        context.coordinator.editor = view
+        view.textStorage?.delegate = context.coordinator
         configure(view, coordinator: context.coordinator)
         view.onResize = { [weak coordinator = context.coordinator, weak view] in
             guard let view else { return }
@@ -47,6 +49,7 @@ struct GrowingTextView: NSViewRepresentable {
             view.undoManager?.removeAllActions()
         }
         context.coordinator.style(view)
+        view.refreshHighlights()
         context.coordinator.measure(view)
         if model.activePostID == postID && (!view.didRequestFocus || model.activeEditor !== view) {
             view.didRequestFocus = true
@@ -76,15 +79,26 @@ struct GrowingTextView: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
-    final class Coordinator: NSObject, NSTextViewDelegate {
+    final class Coordinator: NSObject, NSTextViewDelegate, NSTextStorageDelegate {
         var parent: GrowingTextView
+        weak var editor: ComposerTextView?
         init(_ parent: GrowingTextView) { self.parent = parent }
 
         func textDidChange(_ notification: Notification) {
             guard let view = notification.object as? ComposerTextView else { return }
             parent.text = view.string
             style(view)
+            view.refreshHighlights()
             measure(view)
+        }
+
+        func textStorage(_ textStorage: NSTextStorage, willProcessEditing editedMask: NSTextStorageEditActions,
+                         range editedRange: NSRange, changeInLength delta: Int) {
+            MainActor.assumeIsolated {
+                guard editedMask.contains(.editedCharacters), let editor else { return }
+                let oldRange = NSRange(location: editedRange.location, length: editedRange.length - delta)
+                parent.model.highlights.didEdit(HighlightEdit(range: oldRange, replacementLength: editedRange.length), in: editor)
+            }
         }
 
         func textViewDidChangeSelection(_ notification: Notification) {
@@ -132,6 +146,17 @@ final class ComposerTextView: NSTextView {
     var onSelectionChange: (() -> Void)?
     var onResize: (() -> Void)?
     var didRequestFocus = false
+    var highlightRanges: [NSRange] = []
+
+    func refreshHighlights() {
+        guard let layoutManager else { return }
+        let fullRange = NSRange(location: 0, length: (string as NSString).length)
+        layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: fullRange)
+        for range in highlightRanges {
+            layoutManager.addTemporaryAttribute(.backgroundColor, value: NSColor.systemYellow.withAlphaComponent(0.3), forCharacterRange: range)
+        }
+        needsDisplay = true
+    }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()

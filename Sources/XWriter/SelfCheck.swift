@@ -39,7 +39,31 @@ enum SelfCheck {
         }
     }
 
-    @MainActor static func interface(model: ComposerModel, window: NSWindow, synonymService: SynonymStub) {
+    @MainActor final class HighlightStub: HighlightService {
+        var authenticated = true
+        var signIns = 0
+        var texts: [String] = []
+        var prompts: [String] = []
+        var models: [ClaudeModel] = []
+        var efforts: [ClaudeEffort] = []
+        var delay = Duration.milliseconds(100)
+        var ignoreCancellation = false
+        var failure: Error?
+        var result = HighlightMatches(matches: [.init(text: "precise", occurrence: 1), .init(text: "clear", occurrence: 1),
+                                               .init(text: "precise", occurrence: 2)])
+        func isAuthenticated() async throws -> Bool { authenticated }
+        func signIn() async throws { signIns += 1; authenticated = true }
+        func highlights(in text: String, prompt: String, model: ClaudeModel, effort: ClaudeEffort) async throws -> HighlightMatches {
+            texts.append(text); prompts.append(prompt); models.append(model); efforts.append(effort)
+            let response = result
+            do { try await Task.sleep(for: delay) }
+            catch is CancellationError { if !ignoreCancellation { throw CancellationError() } }
+            if let failure { throw failure }
+            return response
+        }
+    }
+
+    @MainActor static func interface(model: ComposerModel, window: NSWindow, synonymService: SynonymStub, highlightService: HighlightStub) {
         Task { @MainActor in
             var checks = 0
             func require(_ condition: @autoclosure () -> Bool, _ name: String) {
@@ -67,14 +91,6 @@ enum SelfCheck {
             require(model.avatar != nil, "profile photo loads")
             require(window.firstResponder === editor, "editor receives initial focus")
             require(editor.bounds.width > 400, "editor has usable width")
-            let initialDraft = model.draft
-            for (index, label) in ["Image", "GIF", "Poll", "Emoji", "Calendar", "Location"].enumerated() {
-                let location = NSPoint(x: 77 + CGFloat(index) * 34, y: 29)
-                await click(at: location)
-                require(model.draft == initialDraft && editor.string.isEmpty && window.firstResponder === editor &&
-                        window.attachedSheet == nil && NSApp.keyWindow === window,
-                        "disabled \(label) toolbar icon does not edit or open anything")
-            }
             let oldPhotoShortcut = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
                                                     timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
                                                     context: nil, characters: "o", charactersIgnoringModifiers: "o", isARepeat: false, keyCode: 31)!
@@ -212,11 +228,12 @@ enum SelfCheck {
             require(!model.showDrafts, "Command-D closes the drawer")
             require(abs(window.frame.width - (1000 - ComposerWindowSizing.drawerWidth)) < 1, "closing respects resizing while drawer is open")
             await synonymInterface(model: model, window: window, service: synonymService) { require($0, $1) }
+            await highlightInterface(model: model, window: window, service: highlightService) { require($0, $1) }
             await commandChecks { require($0, $1) }
             require(model.save(), "edited content persists")
             UserDefaults.standard.removePersistentDomain(forName: model.storage.directory.lastPathComponent)
             try? FileManager.default.removeItem(at: model.storage.directory)
-            print("Passed \(checks) native UI checks: editing, drafts drawer, sizing, synonyms, CLI lifecycle, focus, and persistence.")
+            print("Passed \(checks) native UI checks: editing, drafts drawer, sizing, synonyms, highlights, settings, CLI lifecycle, focus, and persistence.")
             exit(0)
         }
     }
@@ -469,7 +486,221 @@ enum SelfCheck {
             let untouchedFuture = try Data(contentsOf: legacyStore.file)
             check(untouchedFuture == futureData, "unsupported archive remains untouched")
         } catch { fputs("FAIL: \(error)\n", stderr); exit(1) }
-        print("Passed \(count) checks: character weighting, post validation, URL encoding, drafts, threads, archive migration, and storage recovery.")
+        highlightChecks { check($0, $1) }
+        print("Passed \(count) checks: character weighting, post validation, URL encoding, drafts, threads, archive migration, highlights, settings, and storage recovery.")
+    }
+
+    @MainActor private static func highlightChecks(check: (Bool, String) -> Void) {
+        do {
+            let text = "😀 clear, clear; é e\u{301}."
+            let matches = HighlightMatches(matches: [.init(text: "clear", occurrence: 2), .init(text: "é", occurrence: 1),
+                                                     .init(text: "e\u{301}", occurrence: 1)])
+            let ranges = try matches.ranges(in: text)
+            check(ranges == [NSRange(location: 10, length: 5), NSRange(location: 17, length: 1), NSRange(location: 19, length: 2)],
+                  "highlight quotes resolve repeated text, emoji offsets, and distinct Unicode encodings")
+            for invalid in [
+                HighlightMatches(matches: [.init(text: "absent", occurrence: 1)]),
+                HighlightMatches(matches: [.init(text: "clear", occurrence: 3)]),
+                HighlightMatches(matches: [.init(text: "clear", occurrence: 0)]),
+                HighlightMatches(matches: [.init(text: "", occurrence: 1)]),
+                HighlightMatches(matches: [.init(text: "\u{301}", occurrence: 1)]),
+                HighlightMatches(matches: [.init(text: "clear", occurrence: 1), .init(text: "clear", occurrence: 1)])
+            ] {
+                do { _ = try invalid.ranges(in: text); check(false, "invalid intervals must fail") }
+                catch HighlightError.invalidResponse { check(true, "invalid, duplicate, or split-grapheme intervals are rejected") }
+            }
+            check(try HighlightMatches(matches: []).ranges(in: text).isEmpty, "no matches is a valid response")
+            check(try HighlightMatches(matches: [.init(text: "ana", occurrence: 1), .init(text: "ana", occurrence: 2)]).ranges(in: "banana") ==
+                  [NSRange(location: 1, length: 3), NSRange(location: 3, length: 3)], "overlapping quoted occurrences resolve independently")
+            let spans = [NSRange(location: 4, length: 3), NSRange(location: 12, length: 4), NSRange(location: 20, length: 2)]
+            check(HighlightEdit(range: NSRange(location: 5, length: 0), replacementLength: 0).applying(to: spans) == spans,
+                  "empty edits leave highlights unchanged")
+            check(HighlightEdit(range: NSRange(location: 5, length: 0), replacementLength: 2).applying(to: spans) ==
+                  [NSRange(location: 14, length: 4), NSRange(location: 22, length: 2)],
+                  "inserting inside a highlight removes it and shifts later intervals")
+            check(HighlightEdit(range: NSRange(location: 0, length: 3), replacementLength: 0).applying(to: spans) ==
+                  [NSRange(location: 1, length: 3), NSRange(location: 9, length: 4), NSRange(location: 17, length: 2)],
+                  "deletion before highlights shifts them without clearing them")
+            check(HighlightEdit(range: NSRange(location: 6, length: 8), replacementLength: 1).applying(to: spans) ==
+                  [NSRange(location: 13, length: 2)],
+                  "selection replacement removes every intersecting interval and shifts the rest")
+            check(HighlightEdit(range: NSRange(location: 7, length: 0), replacementLength: 1).applying(to: spans).count == 2 &&
+                  HighlightEdit(range: NSRange(location: 12, length: 0), replacementLength: 1).applying(to: spans).count == 2,
+                  "typing at a highlight edge clears the affected span")
+            check(PromptIcon.allCases.allSatisfy { NSImage(systemSymbolName: $0.rawValue, accessibilityDescription: nil) != nil },
+                  "every toolbar library icon is available on this Mac")
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent("XWriter-toolbar-\(UUID())")
+            let defaults = preferences(for: directory)
+            defer { UserDefaults.standard.removePersistentDomain(forName: directory.lastPathComponent) }
+            let settings = PromptToolbarSettings(preferences: defaults)
+            check(settings.buttons.count == 2 && settings.buttons.allSatisfy(\.isConfigured), "toolbar starts with two editable examples")
+            settings.buttons.append(PromptButton(name: "Custom", icon: .fish, prompt: "Highlight concrete nouns."))
+            settings.buttons[0].prompt = "Highlight verbs."
+            settings.buttons.swapAt(0, 2)
+            let restored = PromptToolbarSettings(preferences: preferences(for: directory))
+            check(restored.buttons == settings.buttons, "custom prompts, names, icons, and order survive a fresh settings instance")
+            settings.buttons.removeAll()
+            check(PromptToolbarSettings(preferences: defaults).buttons.isEmpty, "removing every button persists an empty toolbar")
+            let bad = Data("broken".utf8)
+            defaults.set(bad, forKey: PromptToolbarSettings.preferenceKey)
+            let unreadable = PromptToolbarSettings(preferences: defaults)
+            check(unreadable.isReadOnly && unreadable.error != nil && defaults.data(forKey: PromptToolbarSettings.preferenceKey) == bad,
+                  "unreadable toolbar settings are surfaced and protected")
+            unreadable.reset()
+            check(!unreadable.isReadOnly && PromptToolbarSettings(preferences: defaults).buttons.count == 2, "explicit reset repairs toolbar settings")
+        } catch { check(false, "highlight model check failed: \(error)") }
+    }
+
+    @MainActor private static func highlightInterface(model: ComposerModel, window: NSWindow, service: HighlightStub,
+                                                      check: (Bool, String) -> Void) async {
+        func settle() async { try? await Task.sleep(for: .milliseconds(350)) }
+        @MainActor func click(_ point: NSPoint, in target: NSWindow? = nil) async {
+            let target = target ?? window
+            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
+                                              timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: target.windowNumber,
+                                              context: nil, eventNumber: 0, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0)!
+                NSApp.postEvent(event, atStart: false)
+            }
+            await settle()
+        }
+        func shortcut(_ text: String, code: UInt16, in target: NSWindow) -> Bool {
+            let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
+                                        timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: target.windowNumber,
+                                        context: nil, characters: text, charactersIgnoringModifiers: text, isARepeat: false, keyCode: code)!
+            return NSApp.mainMenu?.performKeyEquivalent(with: event) == true
+        }
+        model.synonyms.dismiss()
+        model.newDraft()
+        await settle()
+        guard let editor = model.activeEditor else { check(false, "highlight editor exists"); return }
+        let source = "😀 A precise line, a clear point, and precise words."
+        editor.insertText(source, replacementRange: NSRange(location: NSNotFound, length: 0))
+        editor.breakUndoCoalescing()
+        editor.undoManager?.removeAllActions()
+        let buttons = model.toolbarSettings.buttons
+        let first = NSPoint(x: 77, y: 29)
+        let second = NSPoint(x: 111, y: 29)
+        await click(first)
+        check(model.highlights.state == .ready && model.highlights.activeButtonID == buttons[0].id && model.highlights.ranges.count == 3,
+              "clicking a configured button highlights the post and stays pressed")
+        check(service.texts == [source] && service.prompts == [buttons[0].prompt] &&
+              service.models == [model.synonymModel] && service.efforts == [model.synonymEffort],
+              "highlight request uses the whole post, configured prompt, and current model/effort")
+        let precise = (source as NSString).range(of: "precise")
+        check(editor.layoutManager?.temporaryAttribute(.backgroundColor, atCharacterIndex: precise.location, effectiveRange: nil) != nil &&
+              editor.textStorage?.attribute(.backgroundColor, at: precise.location, effectiveRange: nil) == nil,
+              "highlights are temporary visual attributes, not document formatting")
+        editor.setSelectedRange(NSRange(location: 0, length: 0))
+        model.toggleDrafts()
+        model.toggleDrafts()
+        await settle()
+        check(model.highlights.ranges.count == 3, "selection and drawer changes preserve highlights")
+        editor.insertText("x", replacementRange: NSRange(location: precise.location + 2, length: 0))
+        editor.breakUndoCoalescing()
+        check(model.highlights.ranges.count == 2 && model.highlights.ranges[0] == (editor.string as NSString).range(of: "clear"),
+              "native typing removes only the edited span and shifts later highlights")
+        editor.undoManager?.undo()
+        check(editor.string == source && model.highlights.ranges.count == 2 &&
+              model.highlights.ranges[0] == (source as NSString).range(of: "clear"), "native undo shifts retained highlights without restoring invalidated spans")
+        editor.insertText("", replacementRange: NSRange(location: 0, length: 3))
+        check(model.highlights.ranges.count == 2 && model.highlights.ranges[0] == (editor.string as NSString).range(of: "clear"),
+              "deleting an emoji prefix preserves and shifts later highlights")
+        let current = editor.string as NSString
+        let start = current.range(of: "clear").location
+        let end = NSMaxRange(current.range(of: "precise", options: .backwards))
+        editor.insertText("one", replacementRange: NSRange(location: start, length: end - start))
+        check(model.highlights.ranges.isEmpty && model.highlights.activeButtonID == buttons[0].id && service.texts.count == 1,
+              "selection replacement removes intersecting highlights without rerunning or unpressing")
+        editor.insertText(source, replacementRange: NSRange(location: 0, length: (editor.string as NSString).length))
+        await click(second)
+        check(model.highlights.activeButtonID == buttons[1].id && model.highlights.ranges.count == 3, "another button replaces the active highlight mode")
+        await click(second)
+        check(model.highlights.state == .idle && editor.highlightRanges.isEmpty && service.texts.count == 2, "unpressing hides highlights without another request")
+        service.delay = .milliseconds(600)
+        await click(first)
+        check(model.highlights.isLoading, "a pending button remains pressed")
+        editor.insertText("x", replacementRange: NSRange(location: precise.location + 2, length: 0))
+        await settle()
+        check(model.highlights.ranges.count == 2 && model.highlights.ranges[0] == (editor.string as NSString).range(of: "clear") && service.texts.count == 3,
+              "edits during a request transform returned intervals without a second call")
+        await click(first)
+        editor.insertText(source, replacementRange: NSRange(location: 0, length: (editor.string as NSString).length))
+        service.ignoreCancellation = true
+        await click(first)
+        await click(second)
+        await settle()
+        check(model.highlights.activeButtonID == buttons[1].id && model.highlights.state == .ready, "late cancelled results cannot reactivate an old button")
+        await click(second)
+        service.delay = .milliseconds(100)
+        service.ignoreCancellation = false
+        service.authenticated = false
+        await click(first)
+        check(service.signIns == 1 && model.highlights.state == .ready, "highlighting uses subscription sign-in when necessary")
+        check(shortcut(",", code: 43, in: window), "Command-comma opens Settings")
+        await settle()
+        guard let settings = NSApp.windows.first(where: { $0.title == "Settings" && $0.isVisible }) else {
+            check(false, "Settings window is visible"); return
+        }
+        check(model.highlights.ranges.count == 3 && window.attachedSheet == nil, "opening Settings preserves pressed highlights")
+        await click(NSPoint(x: 28, y: 24), in: settings)
+        check(model.toolbarSettings.buttons.count == 3 && !model.toolbarSettings.buttons[2].isConfigured, "Settings adds an initially unconfigured button")
+        await click(NSPoint(x: 425, y: settings.contentView!.bounds.height - 80), in: settings)
+        if let field = settings.firstResponder as? NSTextView {
+            field.selectAll(nil)
+            field.insertText("Custom highlight", replacementRange: field.selectedRange())
+        } else { check(false, "Settings name field accepts native editing") }
+        await click(NSPoint(x: 330, y: 260), in: settings)
+        if let field = settings.firstResponder as? NSTextView {
+            field.insertText("Highlight concrete nouns.", replacementRange: NSRange(location: 0, length: (field.string as NSString).length))
+        } else { check(false, "Settings prompt accepts native editing") }
+        await settle()
+        check(model.toolbarSettings.buttons[2].name == "Custom highlight" && model.toolbarSettings.buttons[2].prompt == "Highlight concrete nouns.",
+              "Settings edits button names and prompts")
+        let previousWindows = Set(NSApp.windows.filter(\.isVisible).map(\.windowNumber))
+        await click(NSPoint(x: 235, y: settings.contentView!.bounds.height - 80), in: settings)
+        guard let picker = NSApp.windows.first(where: { $0.isVisible && !previousWindows.contains($0.windowNumber) }) else {
+            check(false, "Settings opens the icon library"); return
+        }
+        await click(NSPoint(x: 46, y: picker.contentView!.bounds.height - 45), in: picker)
+        check(model.toolbarSettings.buttons[2].icon == .leaf && !picker.isVisible,
+              "choosing a library icon updates the button (icon=\(model.toolbarSettings.buttons[2].icon), visible=\(picker.isVisible))")
+        let restored = PromptToolbarSettings(preferences: preferences(for: model.storage.directory))
+        check(restored.buttons == model.toolbarSettings.buttons, "Settings edits persist immediately")
+        await click(NSPoint(x: 70, y: 24), in: settings)
+        check(model.toolbarSettings.buttons.count == 2, "Settings removes the selected button")
+        check(shortcut("w", code: 13, in: settings), "Command-W closes Settings")
+        await settle()
+        check(!settings.isVisible && window.isVisible && model.highlights.activeButtonID == buttons[0].id,
+              "closing Settings leaves the composer and its highlights intact")
+        window.makeKeyAndOrderFront(nil)
+        model.toolbarSettings.buttons[0].prompt += " Be conservative."
+        check(model.highlights.state == .idle, "editing the active prompt clears its outdated results")
+        await click(first)
+        model.toolbarSettings.buttons.removeFirst()
+        check(model.highlights.state == .idle && editor.highlightRanges.isEmpty, "removing an active button clears its highlights")
+        service.delay = .milliseconds(600)
+        service.ignoreCancellation = true
+        await click(first)
+        await click(first)
+        check(model.highlights.state == .idle && editor.highlightRanges.isEmpty, "unpressing a pending button rejects its late response")
+        service.delay = .milliseconds(100)
+        service.ignoreCancellation = false
+        service.result = HighlightMatches(matches: [])
+        await click(first)
+        check(model.highlights.state == .ready && model.highlights.activeButtonID != nil && editor.highlightRanges.isEmpty,
+              "an empty response leaves the button pressed without fake highlights")
+        await click(first)
+        service.result = HighlightMatches(matches: [.init(text: "not in this post", occurrence: 1)])
+        await click(first)
+        check(model.highlights.state == .idle && model.error != nil, "invalid intervals are reported and never partially applied")
+        model.error = nil
+        await settle()
+        service.result = HighlightMatches(matches: [.init(text: "clear", occurrence: 1)])
+        await click(first)
+        model.newDraft()
+        await settle()
+        check(model.highlights.state == .idle, "switching drafts clears document-specific highlights")
     }
 
     @MainActor private static func synonymInterface(model: ComposerModel, window: NSWindow, service: SynonymStub,
@@ -516,10 +747,12 @@ enum SelfCheck {
         await settle()
         check(NSApp.isHidden && !window.isKeyWindow && model.synonyms.state == ready, "synonyms survive switching away from the app")
         NSApp.unhide(nil)
-        window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         await settle()
-        check(window.isKeyWindow && model.synonyms.state == ready, "synonyms remain when returning to the app")
+        window.makeKeyAndOrderFront(nil)
+        await settle()
+        check(window.isKeyWindow && model.synonyms.state == ready,
+              "synonyms remain when returning to the app (key=\(window.isKeyWindow), active=\(NSApp.isActive), unchanged=\(model.synonyms.state == ready), keyWindow=\(NSApp.keyWindow?.className ?? "none"))")
 
         let previousWindows = Set(NSApp.windows.filter(\.isVisible).map(\.windowNumber))
         await click(at: NSPoint(x: 110, y: 82))
@@ -707,7 +940,11 @@ enum SelfCheck {
                 --print)
                     cat > "$CLAUDE_CONFIG_DIR/request.json"
                     printf '%s\\n' "$@" > "$CLAUDE_CONFIG_DIR/arguments.txt"
-                    printf '%s' '{"type":"result","is_error":false,"structured_output":{"latin":["assist"],"germanic":["back"]}}';;
+                    if grep -q '"rule"' "$CLAUDE_CONFIG_DIR/request.json"; then
+                        printf '%s' '{"type":"result","is_error":false,"structured_output":{"matches":[{"text":"clear","occurrence":2}]}}'
+                    else
+                        printf '%s' '{"type":"result","is_error":false,"structured_output":{"latin":["assist"],"germanic":["back"]}}'
+                    fi;;
                 *) exit 5;;
             esac
             """
@@ -728,6 +965,18 @@ enum SelfCheck {
             }
             let request = try JSONDecoder().decode([String: String].self, from: Data(contentsOf: fixture.appendingPathComponent("profile/request.json")))
             check(request == ["target": "lend a hand", "sentence": sentence], "CLI sends the whole phrase and its context as safely encoded JSON")
+            let highlightedText = "😀 clear and clear."
+            let highlightPrompt = #"Highlight the second "clear"."#
+            let highlights = try await cli.highlights(in: highlightedText, prompt: highlightPrompt, model: .opus, effort: .xhigh)
+            check(try highlights.ranges(in: highlightedText) == [NSRange(location: 13, length: 5)], "CLI highlight response resolves exact Unicode-aware intervals")
+            let highlightRequest = try JSONDecoder().decode([String: String].self, from: Data(contentsOf: fixture.appendingPathComponent("profile/request.json")))
+            check(highlightRequest == ["rule": highlightPrompt, "text": highlightedText], "CLI encodes custom prompts and full text without shell interpolation")
+            let highlightArguments = try String(contentsOf: fixture.appendingPathComponent("profile/arguments.txt"), encoding: .utf8).components(separatedBy: "\n")
+            let highlightOptions = Array(zip(highlightArguments, highlightArguments.dropFirst()))
+            check(highlightOptions.contains { $0 == "--model" && $1 == ClaudeModel.opus.rawValue } &&
+                  highlightOptions.contains { $0 == "--effort" && $1 == ClaudeEffort.xhigh.rawValue } &&
+                  highlightOptions.contains { $0 == "--json-schema" && $1 == ClaudeCLI.highlightSchema } &&
+                  highlightOptions.contains { $0 == "--tools" && $1.isEmpty }, "highlight CLI uses current model, effort, interval schema, and no tools")
             let echo = try await ClaudeCommand().run(executable: URL(fileURLWithPath: "/bin/cat"), arguments: [],
                                                      environment: environment, input: #"{"word":"help"}"#, timeout: 5)
             check(echo.status == 0 && String(decoding: echo.output, as: UTF8.self) == #"{"word":"help"}"#, "CLI input and output are piped without a shell")

@@ -51,6 +51,7 @@ enum XWriterApp {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var window: NSWindow!
+    private var settingsWindow: NSWindow?
     private var model: ComposerModel!
     private var snapshotPath: String?
     private var contentHeight = ComposerWindowSizing.minimumHeight
@@ -67,8 +68,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let isTesting = snapshotPath != nil || CommandLine.arguments.contains("--ui-test")
         let isolatedDirectory = isTesting ? FileManager.default.temporaryDirectory.appendingPathComponent("XWriter-preview-\(UUID())") : nil
         let previewSynonyms = isTesting ? SelfCheck.SynonymStub() : nil
+        let previewHighlights = isTesting ? SelfCheck.HighlightStub() : nil
         let preferences = isolatedDirectory.map { SelfCheck.preferences(for: $0) } ?? .standard
-        model = ComposerModel(directory: isolatedDirectory, synonymService: previewSynonyms, preferences: preferences)
+        model = ComposerModel(directory: isolatedDirectory, synonymService: previewSynonyms,
+                              highlightService: previewHighlights, preferences: preferences)
+        model.onShowSettings = { [weak self] in self?.showSettings() }
         if CommandLine.arguments.contains("--demo") {
             model.draft.posts[0].text = "A little less scrolling. A little more writing.\n\nMade for the moments when you have something to say. ✨"
         }
@@ -82,6 +86,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         if isTesting && CommandLine.arguments.contains("--synonyms") {
             model.draft.posts[0].text = "A little help goes a long way."
+        }
+        if isTesting && CommandLine.arguments.contains("--highlights") {
+            model.draft.posts[0].text = "😀 A precise line, a clear point, and precise words."
         }
         if CommandLine.arguments.contains("--dark") { NSApp.appearance = NSAppearance(named: .darkAqua) }
         else { model.applyAppearance() }
@@ -128,12 +135,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 self.model.synonyms.lookup(in: editor, model: self.model.synonymModel, effort: self.model.synonymEffort)
             }
         }
+        if isTesting && CommandLine.arguments.contains("--highlights") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                guard let self, let button = self.model.toolbarSettings.buttons.first else { return }
+                self.model.toggleHighlights(button)
+            }
+        }
+        if isTesting && CommandLine.arguments.contains("--settings") { showSettings() }
         if snapshotPath != nil {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in self?.captureSnapshot() }
         }
-        if CommandLine.arguments.contains("--ui-test"), let previewSynonyms {
+        if CommandLine.arguments.contains("--ui-test"), let previewSynonyms, let previewHighlights {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                SelfCheck.interface(model: self.model, window: self.window, synonymService: previewSynonyms)
+                SelfCheck.interface(model: self.model, window: self.window, synonymService: previewSynonyms, highlightService: previewHighlights)
             }
         }
     }
@@ -208,9 +222,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         scheduleResize(to: contentHeight)
     }
     func windowDidChangeScreen(_ notification: Notification) { scheduleResize(to: contentHeight) }
-    func windowShouldClose(_ sender: NSWindow) -> Bool { model.synonyms.dismiss(); return model.save() }
+    func windowShouldClose(_ sender: NSWindow) -> Bool { model.synonyms.dismiss(); model.highlights.dismiss(); return model.save() }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         model?.synonyms.dismiss()
+        model?.highlights.dismiss()
         guard model != nil, !model.save() else { return .terminateNow }
         let alert = NSAlert()
         alert.messageText = "Your latest changes couldn't be saved."
@@ -231,6 +246,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let menu = NSMenu()
         let app = submenu("XWriter", in: menu)
         item("About XWriter", action: #selector(about), in: app)
+        app.addItem(.separator())
+        item("Settings…", action: #selector(showSettings), key: ",", in: app)
         app.addItem(.separator())
         item("Hide XWriter", action: #selector(NSApplication.hide(_:)), key: "h", in: app, target: NSApp)
         item("Hide Others", action: #selector(NSApplication.hideOtherApplications(_:)), key: "h", modifiers: [.command, .option], in: app, target: NSApp)
@@ -301,7 +318,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         model.synonyms.lookup(in: editor, model: model.synonymModel, effort: model.synonymEffort)
     }
     @objc private func post() { model.prepareHandoff() }
-    @objc private func close() { window.performClose(nil) }
+    @objc private func close() { NSApp.keyWindow?.performClose(nil) }
+    @objc private func showSettings() {
+        if settingsWindow == nil {
+            let settings = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 490),
+                                    styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+            settings.title = "Settings"
+            settings.isReleasedWhenClosed = false
+            settings.minSize = NSSize(width: 660, height: 450)
+            settings.contentView = NSHostingView(rootView: ToolbarSettingsView(settings: model.toolbarSettings))
+            settings.center()
+            settingsWindow = settings
+        }
+        settingsWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
     @objc private func show() { window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true) }
     @objc private func light() { model.appearance = "light" }
     @objc private func dark() { model.appearance = "dark" }
@@ -316,8 +347,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func captureSnapshot() {
-        guard let path = snapshotPath, let view = window.contentView,
-              let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { exit(1) }
+        let target = CommandLine.arguments.contains("--settings") ? settingsWindow : window
+        guard let path = snapshotPath, let view = target?.contentView,
+              let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
+            fputs("Snapshot failed: the preview window is not ready.\n", stderr)
+            exit(1)
+        }
         view.cacheDisplay(in: view.bounds, to: bitmap)
         do {
             try bitmap.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: path))

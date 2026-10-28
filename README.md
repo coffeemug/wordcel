@@ -20,7 +20,7 @@ The build produces an ad-hoc signed `XWriter.app` in the project directory. You 
 - Light, dark, and system appearance from the View menu.
 - Native text selection, undo/redo, spell checking, and highlighting for links, hashtags, and mentions.
 - On-demand Claude synonyms grouped by Latin and Germanic roots, with click-to-replace suggestions.
-- The image, GIF, poll, emoji, calendar, and location icons remain visible as disabled placeholders. Their old actions, menus, media import/export, polls, and planned-date features have been removed.
+- Configurable prompt buttons highlight text using Claude. Add, remove, rename, reorder, and customize their icons and prompts in Settings (⌘,).
 - Automatic local draft saving, restoration, and deletion in a right-side drawer. The drawer icon widens the window to keep the composer alongside your drafts. Closing the window keeps the draft; clicking the Dock icon reopens it.
 - The build bundles `me.png` as your default avatar. Custom profile photo: click the avatar or use View → Choose Profile Photo.
 
@@ -38,11 +38,21 @@ Install the official [Claude Code CLI](https://code.claude.com/docs/en/setup) an
 
 While Claude runs in the background, the toolbar icons become `pulling synonyms...` with cycling dots. Results appear in two rows of up to six context-fitting suggestions: Latin beside a laurel symbol above Germanic beside an oak leaf. Click a synonym to replace the target word or the entire selected phrase, preserving surrounding whitespace. Capitalization and native undo/redo are preserved. Suggestions stay visible when switching apps, toggling the drawer, or moving the cursor within the same word. Press **Esc**, edit the target, or choose a different word or phrase selection to cancel the lookup and restore the icons. Long result rows can be scrolled horizontally.
 
-The blue model link with the robot icon above the toolbar selects Fable 5.1 (the default), Opus 5.5, Sonnet 5.5, or Haiku 5.5. The same dropdown offers Low, Medium (the default), High, Extra high, and Max reasoning levels. It stays open while selecting options; click outside or press Esc to close it. Both choices are saved in macOS preferences across restarts and apply to the next lookup; existing suggestions stay visible.
+The blue model link with the robot icon above the toolbar selects Fable 5.1 (the default), Opus 5.5, Sonnet 5.5, or Haiku 5.5. The same dropdown offers Low, Medium (the default), High, Extra high, and Max reasoning levels. It stays open while selecting options; click outside or press Esc to close it. Both choices are saved in macOS preferences across restarts and apply to the next synonym or highlighting request; existing results stay visible.
 
 The target word or phrase and its enclosing sentence(s) are sent to the selected model for context-appropriate alternatives, allowing modest shifts in nuance rather than requiring exact equivalence. Suggestions must still fit grammatically and preserve the sentence's overall intent. Results are always single, unhyphenated words, even for phrase lookups. Other sentences are not sent. Each lookup uses a fresh temporary working directory, no session persistence, and no tools, MCP servers, skills, or user/project hooks. Claude may still misclassify a word's origins; suggestions are not verified dictionary entries. Empty groups are shown as “None found.”
 
 If macOS intercepts **⌃Space** to switch input sources, change or disable that binding in **System Settings → Keyboard → Keyboard Shortcuts → Input Sources**. **Edit → Find Synonyms** also starts a lookup. Update Claude Code if it reports unsupported command-line options.
+
+## Highlighting buttons
+
+Open **Settings (⌘,)** to add or remove toolbar buttons, edit their names and prompts, and choose from 40 monochrome SF Symbols. Drag rows to reorder them. Two editable examples are included: **Latin words** (leaf) and **Removable wording** (scissors). Settings save automatically across restarts. New buttons stay disabled until they have a name and prompt; an empty toolbar offers an “Add buttons…” link.
+
+Write a natural-language rule describing what to highlight; no output-format instructions are needed. Clicking a button sends its prompt and the **entire active post** to the composer's selected Claude model through the same isolated CLI and subscription sign-in as synonyms. The button stays pressed while running and after highlighting matching text. Click it again to hide the highlights. Selecting another button cancels any pending request, clears the previous highlights, and runs the new prompt. Only one highlighting button is active at a time. Long toolbars scroll horizontally.
+
+Editing never reruns a prompt. Inserting within a highlighted span or at either edge clears that span; deleting or replacing text clears intersected spans. All other intervals shift with the edit, including native undo/redo and edits made while Claude is still responding. Invalidated spans do not reappear on undo. The button stays pressed even if no highlights remain; toggle it off and on to analyze the new text. Cursor movement, app switching, the drafts drawer, and Settings leave highlights intact. Switching posts/drafts, removing the active button, or editing its prompt clears its results.
+
+Claude returns exact quoted spans and occurrence numbers, which the app validates and converts to native UTF-16 ranges without splitting Unicode characters. Malformed output is reported, not partially applied. Highlights are temporary editor attributes: they never alter draft text, clipboard formatting, publishing, or undo history, and they are not saved across restarts. The old image/GIF/poll/emoji/calendar/location actions remain removed.
 
 ## Keyboard shortcuts
 
@@ -53,8 +63,9 @@ If macOS intercepts **⌃Space** to switch input sources, change or disable that
 | ⌘D | Toggle the drafts drawer |
 | ⌘Return | Review for publishing on X |
 | ⌃Space | Find single-word alternatives for the word at the cursor or selected phrase |
+| ⌘, | Configure toolbar buttons in Settings |
 | ⌘⇧D | Toggle light/dark appearance |
-| ⌘W | Close the composer |
+| ⌘W | Close the current window |
 | ⌘1 | Show the composer |
 
 ## Storage and checks
@@ -69,7 +80,7 @@ Drafts are written atomically to `~/Library/Application Support/XWriter/drafts.j
 ./XWriter.app/Contents/MacOS/XWriter --ui-test
 ```
 
-The model checks cover weighted counts, Unicode and URL handling, post validation, draft round trips, editing without duplication, thread restoration, retired-data migration, deletion, corrupt-file protection, synonym targeting, and response validation. The native UI checks also exercise disabled toolbar placeholders, synonym shortcuts, cancellation, replacement and undo, simulated sign-in, and subprocess timeouts. Checks use synthetic Claude responses and never sign in or send your drafts to Claude.
+The model checks cover weighted counts, Unicode and URL handling, post validation, draft round trips, editing without duplication, thread restoration, retired-data migration, deletion, corrupt-file protection, synonym targeting, interval tracking, toolbar persistence, and response validation. The native UI checks also exercise Settings, exclusive highlighting toggles, edits during requests, synonym shortcuts, cancellation, replacement and undo, simulated sign-in, and subprocess timeouts. Checks use synthetic Claude responses and never sign in or send your drafts to Claude.
 
 To render isolated previews without modifying your drafts:
 
@@ -78,6 +89,8 @@ To render isolated previews without modifying your drafts:
 ./XWriter.app/Contents/MacOS/XWriter --snapshot /tmp/xwriter-dark.png --demo --dark
 ./XWriter.app/Contents/MacOS/XWriter --snapshot /tmp/xwriter-drafts.png --demo --drafts
 ./XWriter.app/Contents/MacOS/XWriter --snapshot /tmp/xwriter-synonyms.png --synonyms
+./XWriter.app/Contents/MacOS/XWriter --snapshot /tmp/xwriter-highlights.png --highlights
+./XWriter.app/Contents/MacOS/XWriter --snapshot /tmp/xwriter-settings.png --settings
 ```
 
 The project uses a small `ViewState` wrapper around SwiftUI's public `State<Value>` because recent Command Line Tools SDKs expose a same-named macro whose plugin only ships with Xcode.
