@@ -72,8 +72,6 @@ struct GrowingTextView: NSViewRepresentable {
             guard let view else { return }
             model?.synonyms.invalidateIfChanged(in: view)
         }
-        view.onImages = { [weak model] urls in model?.addImages(urls, to: postID) }
-        view.onImagePaste = { [weak model] image in model?.pasteImage(image, to: postID) }
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -132,8 +130,6 @@ final class ComposerTextView: NSTextView {
     var onSubmit: (() -> Void)?
     var onSynonymLookup: (() -> Void)?
     var onSelectionChange: (() -> Void)?
-    var onImages: (([URL]) -> Void)?
-    var onImagePaste: ((NSImage) -> Void)?
     var onResize: (() -> Void)?
     var didRequestFocus = false
 
@@ -185,23 +181,6 @@ final class ComposerTextView: NSTextView {
     }
 
     override func paste(_ sender: Any?) {
-        let pasteboard = NSPasteboard.general
-        if let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL], !urls.isEmpty {
-            onImages?(urls)
-        } else if pasteboard.string(forType: .string) == nil, let image = NSImage(pasteboard: pasteboard) {
-            onImagePaste?(image)
-        } else { super.pasteAsPlainText(sender) }
-    }
-
-    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
-        sender.draggingPasteboard.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) ? .copy : super.draggingEntered(sender)
-    }
-
-    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
-        if let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL], !urls.isEmpty {
-            onImages?(urls)
-            return true
-        }
-        return super.performDragOperation(sender)
+        super.pasteAsPlainText(sender)
     }
 }

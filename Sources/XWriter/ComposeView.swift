@@ -4,8 +4,6 @@ import SwiftUI
 struct ComposeView: View {
     @ObservedObject var model: ComposerModel
     @ViewState<Bool> private var modelPopover = false
-    @ViewState<Bool> private var planPopover = false
-    @ViewState<Bool> private var dropTarget = false
 
     var body: some View {
         HStack(spacing: 0) {
@@ -33,17 +31,6 @@ struct ComposeView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(spacing: 0) {
-                        if let date = model.draft.plannedDate {
-                            HStack(spacing: 7) {
-                                Image(systemName: "calendar")
-                                Text("Planned for \(date.formatted(date: .abbreviated, time: .shortened))")
-                                Spacer()
-                                Button { model.draft.plannedDate = nil } label: { ComposerIcon(kind: .close, size: 14) }
-                                    .buttonStyle(.plain).accessibilityLabel("Remove planned date")
-                            }
-                            .font(.system(size: 13)).foregroundStyle(Theme.secondary)
-                            .padding(.leading, 68).padding(.trailing, 20).padding(.bottom, 12)
-                        }
                         ForEach($model.draft.posts) { $post in
                             PostEditor(post: $post, model: model, isLast: post.id == model.draft.posts.last?.id)
                                 .id(post.id)
@@ -60,12 +47,6 @@ struct ComposeView: View {
         .onPreferenceChange(ComposerHeightKey.self) { model.onContentHeightChange?($0) }
         .foregroundStyle(Theme.foreground)
         .background(Theme.background)
-        .overlay {
-            if dropTarget {
-                RoundedRectangle(cornerRadius: 12).stroke(Theme.blue, lineWidth: 2)
-                    .padding(4).allowsHitTesting(false)
-            }
-        }
         .overlay(alignment: .bottom) {
             if let toast = model.toast {
                 Text(toast).font(.system(size: 13, weight: .medium))
@@ -76,16 +57,6 @@ struct ComposeView: View {
             }
         }
         .animation(.easeOut(duration: 0.16), value: model.toast)
-        .onDrop(of: [.fileURL], isTargeted: $dropTarget) { providers in
-            let postID = model.activePostID
-            for provider in providers {
-                _ = provider.loadObject(ofClass: URL.self) { url, _ in
-                    guard let url else { return }
-                    DispatchQueue.main.async { model.addImages([url], to: postID) }
-                }
-            }
-            return !providers.isEmpty
-        }
     }
 
     private var header: some View {
@@ -137,20 +108,12 @@ struct ComposeView: View {
             HStack(spacing: 0) {
                 SynonymToolbar(controller: model.synonyms) {
                     HStack(spacing: 0) {
-                        tool(.photo, "Add photos") { model.pickImages() }
-                            .disabled(model.draft.posts[model.activeIndex].poll != nil || model.draft.posts[model.activeIndex].attachments.count >= 4)
-                        tool(.gif, "Add a GIF from your Mac") { model.pickImages(gifOnly: true) }
-                            .disabled(model.draft.posts[model.activeIndex].poll != nil || model.draft.posts[model.activeIndex].attachments.count >= 4)
-                        tool(.poll, "Add a poll") { model.draft.posts[model.activeIndex].poll = Poll() }
-                            .disabled(!model.draft.posts[model.activeIndex].attachments.isEmpty || model.draft.posts[model.activeIndex].poll != nil)
-                        tool(.emoji, "Emoji & Symbols (⌃⌘Space)") {
-                            if let editor = model.activeEditor { editor.window?.makeFirstResponder(editor) }
-                            NSApp.orderFrontCharacterPalette(nil)
-                        }
-                        tool(.calendar, "Plan a post") { planPopover.toggle() }
-                            .popover(isPresented: $planPopover, arrowEdge: .bottom) { PlanPicker(model: model) { planPopover = false } }
-                        tool(.location, "Add a location on X when you publish") { }
-                            .disabled(true)
+                        ToolPlaceholder(icon: .photo, label: "Image")
+                        ToolPlaceholder(icon: .gif, label: "GIF")
+                        ToolPlaceholder(icon: .poll, label: "Poll")
+                        ToolPlaceholder(icon: .emoji, label: "Emoji")
+                        ToolPlaceholder(icon: .calendar, label: "Calendar")
+                        ToolPlaceholder(icon: .location, label: "Location")
                     }
                 }.padding(.leading, 44)
                 Spacer(minLength: 8)
@@ -165,21 +128,15 @@ struct ComposeView: View {
             .frame(height: 58)
         }.padding(.horizontal, 16)
     }
-
-    private func tool(_ icon: ComposerIcon.Kind, _ label: String, action: @escaping () -> Void) -> some View {
-        ToolButton(icon: icon, label: label, action: action)
-    }
 }
 
-struct ToolButton: View {
+struct ToolPlaceholder: View {
     let icon: ComposerIcon.Kind
     let label: String
-    let action: () -> Void
-    @Environment(\.isEnabled) private var enabled
     var body: some View {
-        Button(action: action) { ComposerIcon(kind: icon).opacity(enabled ? 1 : 0.4) }
+        Button {} label: { ComposerIcon(kind: icon).opacity(0.4) }
             .foregroundStyle(Theme.blue).buttonStyle(RoundButtonStyle(blue: true))
-            .help(label).accessibilityLabel(label)
+            .disabled(true).help("\(label) (unavailable)").accessibilityLabel(label)
     }
 }
 
@@ -206,10 +163,6 @@ struct PostEditor: View {
                     }
                     GrowingTextView(text: $post.text, height: $height, postID: post.id, model: model)
                         .frame(height: height)
-                }
-                if !post.attachments.isEmpty { AttachmentGrid(attachments: $post.attachments) }
-                if post.poll != nil {
-                    PollEditor(poll: Binding(get: { post.poll ?? Poll() }, set: { post.poll = $0 })) { post.poll = nil }
                 }
                 if model.draft.posts.count > 1 {
                     HStack {

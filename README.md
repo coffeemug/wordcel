@@ -18,10 +18,9 @@ The build produces an ad-hoc signed `XWriter.app` in the project directory. You 
 - Compact, resizable, draggable composer with X-style colors, spacing, icon buttons, a synonym model picker, and an X Premium counter: a perimeter ring with a 20-to-1 countdown at 260–279 characters, then an unnumbered circle that fills from the bottom at 280 and beyond, up to 25,000.
 - The window grows downward as you type, up to 760 points or the available screen height, then scrolls. Deleting text shrinks it again.
 - Light, dark, and system appearance from the View menu.
-- Native text selection, undo/redo, spell checking, emoji picker, and highlighting for links, hashtags, and mentions.
+- Native text selection, undo/redo, spell checking, and highlighting for links, hashtags, and mentions.
 - On-demand Claude synonyms grouped by Latin and Germanic roots, with click-to-replace suggestions.
-- Up to four image attachments from the file picker, clipboard, or drag and drop. GIF files are supported; the inline preview is static. Images can have editable ALT descriptions.
-- Poll drafting and an optional planned date.
+- The image, GIF, poll, emoji, calendar, and location icons remain visible as disabled placeholders. Their old actions, menus, media import/export, polls, and planned-date features have been removed.
 - Automatic local draft saving, restoration, and deletion in a right-side drawer. The drawer icon widens the window to keep the composer alongside your drafts. Closing the window keeps the draft; clicking the Dock icon reopens it.
 - The build bundles `me.png` as your default avatar. Custom profile photo: click the avatar or use View → Choose Profile Photo.
 
@@ -29,7 +28,7 @@ The build produces an ad-hoc signed `XWriter.app` in the project directory. You 
 
 **Post** opens a review sheet. **Open on X** hands the first post's text to X in your default browser, where you review and publish it. For long posts, **Copy & open X** copies the text and opens the X composer; paste with ⌘V. Nothing is posted automatically. The draft remains saved locally.
 
-Images, ALT descriptions, polls, reply permissions, and planned dates are draft metadata; they must be added on X. The review sheet lets you export images and copy ALT descriptions. Previously saved threads remain available; publish their first post and copy the remaining posts into replies on X. New threads cannot be created. Planned dates do not trigger automatic publishing or reminders. Location is disabled because this app has no X account integration.
+Publishing sends text only. Apply any previously saved reply settings directly on X. Previously saved threads remain available; publish their first post and copy the remaining posts into replies on X. New threads cannot be created.
 
 The character counter approximates X's weighting, including CJK characters, combined emoji, Unicode normalization, and 23-character web links. URL detection uses Apple's `NSDataDetector`, so unusual URLs can differ from X's parser. X's own editor makes the final validation.
 
@@ -41,7 +40,7 @@ While Claude runs in the background, the toolbar icons become `pulling synonyms.
 
 The blue model link with the robot icon above the toolbar selects Fable 5.1 (the default), Opus 5.5, Sonnet 5.5, or Haiku 5.5. The same dropdown offers Low, Medium (the default), High, Extra high, and Max reasoning levels. It stays open while selecting options; click outside or press Esc to close it. Both choices are saved in macOS preferences across restarts and apply to the next lookup; existing suggestions stay visible.
 
-The target word or phrase and its enclosing sentence(s) are sent to the selected model for context-appropriate alternatives, allowing modest shifts in nuance rather than requiring exact equivalence. Suggestions must still fit grammatically and preserve the sentence's overall intent. Results are always single, unhyphenated words, even for phrase lookups. Other sentences and attachments are not sent. Each lookup uses a fresh temporary working directory, no session persistence, and no tools, MCP servers, skills, or user/project hooks. Claude may still misclassify a word's origins; suggestions are not verified dictionary entries. Empty groups are shown as “None found.”
+The target word or phrase and its enclosing sentence(s) are sent to the selected model for context-appropriate alternatives, allowing modest shifts in nuance rather than requiring exact equivalence. Suggestions must still fit grammatically and preserve the sentence's overall intent. Results are always single, unhyphenated words, even for phrase lookups. Other sentences are not sent. Each lookup uses a fresh temporary working directory, no session persistence, and no tools, MCP servers, skills, or user/project hooks. Claude may still misclassify a word's origins; suggestions are not verified dictionary entries. Empty groups are shown as “None found.”
 
 If macOS intercepts **⌃Space** to switch input sources, change or disable that binding in **System Settings → Keyboard → Keyboard Shortcuts → Input Sources**. **Edit → Find Synonyms** also starts a lookup. Update Claude Code if it reports unsupported command-line options.
 
@@ -52,17 +51,15 @@ If macOS intercepts **⌃Space** to switch input sources, change or disable that
 | ⌘N | New post, preserving the current draft |
 | ⌘S | Save draft now |
 | ⌘D | Toggle the drafts drawer |
-| ⌘O | Add photos |
 | ⌘Return | Review for publishing on X |
 | ⌃Space | Find single-word alternatives for the word at the cursor or selected phrase |
-| ⌃⌘Space | Emoji & Symbols |
 | ⌘⇧D | Toggle light/dark appearance |
 | ⌘W | Close the composer |
 | ⌘1 | Show the composer |
 
 ## Storage and checks
 
-Drafts and attached image data are written atomically to `~/Library/Application Support/XWriter/drafts.json`. The profile photo is stored alongside it. The app preserves an unreadable archive instead of overwriting it. Keep a backup of this directory if your drafts are important.
+Drafts are written atomically to `~/Library/Application Support/XWriter/drafts.json`. On first load, version-1 archives are upgraded to version 2: saved attachments (including GIFs and ALT descriptions), polls, and planned dates are permanently removed. Saved drafts containing no text are removed; the current editor remains available even when empty. Text and existing threads are preserved. The profile photo is stored separately and is unchanged. The app preserves an unreadable archive instead of overwriting it. Keep a backup of this directory if your drafts are important.
 
 ```sh
 ./check.sh
@@ -72,7 +69,7 @@ Drafts and attached image data are written atomically to `~/Library/Application 
 ./XWriter.app/Contents/MacOS/XWriter --ui-test
 ```
 
-The model checks cover weighted counts, Unicode and URL handling, post and poll validation, draft round trips, editing without duplication, thread restoration, attachments, deletion, corrupt-file protection, synonym targeting, and response validation. The native UI checks also exercise synonym shortcuts, cancellation, replacement and undo, simulated sign-in, and subprocess timeouts. Checks use synthetic Claude responses and never sign in or send your drafts to Claude.
+The model checks cover weighted counts, Unicode and URL handling, post validation, draft round trips, editing without duplication, thread restoration, retired-data migration, deletion, corrupt-file protection, synonym targeting, and response validation. The native UI checks also exercise disabled toolbar placeholders, synonym shortcuts, cancellation, replacement and undo, simulated sign-in, and subprocess timeouts. Checks use synthetic Claude responses and never sign in or send your drafts to Claude.
 
 To render isolated previews without modifying your drafts:
 

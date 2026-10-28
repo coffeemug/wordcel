@@ -47,8 +47,7 @@ enum SelfCheck {
                 checks += 1
             }
             func settle() async { try? await Task.sleep(for: .milliseconds(300)) }
-            @MainActor func clickHeader(at x: CGFloat) async {
-                let location = NSPoint(x: x, y: window.contentView!.bounds.height - 26)
+            @MainActor func click(at location: NSPoint) async {
                 for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
                     let event = NSEvent.mouseEvent(with: type, location: location, modifierFlags: [],
                                                   timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
@@ -56,6 +55,9 @@ enum SelfCheck {
                     window.sendEvent(event)
                 }
                 await settle()
+            }
+            @MainActor func clickHeader(at x: CGFloat) async {
+                await click(at: NSPoint(x: x, y: window.contentView!.bounds.height - 26))
             }
             guard let editor = model.activeEditor else { fputs("UI FAIL: no active editor\n", stderr); exit(1) }
             let initialFrame = window.frame
@@ -65,6 +67,18 @@ enum SelfCheck {
             require(model.avatar != nil, "profile photo loads")
             require(window.firstResponder === editor, "editor receives initial focus")
             require(editor.bounds.width > 400, "editor has usable width")
+            let initialDraft = model.draft
+            for (index, label) in ["Image", "GIF", "Poll", "Emoji", "Calendar", "Location"].enumerated() {
+                let location = NSPoint(x: 77 + CGFloat(index) * 34, y: 29)
+                await click(at: location)
+                require(model.draft == initialDraft && editor.string.isEmpty && window.firstResponder === editor &&
+                        window.attachedSheet == nil && NSApp.keyWindow === window,
+                        "disabled \(label) toolbar icon does not edit or open anything")
+            }
+            let oldPhotoShortcut = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
+                                                    timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                                                    context: nil, characters: "o", charactersIgnoringModifiers: "o", isARepeat: false, keyCode: 31)!
+            require(NSApp.mainMenu?.performKeyEquivalent(with: oldPhotoShortcut) != true, "photo import has no menu shortcut")
             editor.insertText("Hello #native", replacementRange: NSRange(location: NSNotFound, length: 0))
             require(model.draft.posts[0].text == "Hello #native", "native typing updates the model")
             editor.breakUndoCoalescing()
@@ -240,11 +254,6 @@ enum SelfCheck {
         check(ComposerModel.requiresClipboardHandoff(String(repeating: "x", count: 25_000)), "long posts use clipboard handoff")
         check(!ComposerModel.requiresClipboardHandoff("Hello"), "short posts use direct handoff")
         check(Post(text: String(repeating: "x", count: 280)).valid, "exact limit can be posted")
-        check(!Poll().valid, "empty poll cannot be posted")
-        check(Poll(choices: ["Yes", "No"]).valid, "completed poll")
-        check(!Poll(choices: ["Yes", "No"], days: 7, hours: 1).valid, "poll maximum duration")
-        check(!Poll(choices: ["Yes", "No"], days: 0, minutes: 4).valid, "poll minimum duration")
-        check(!Poll(choices: [String(repeating: "x", count: 26), "No"]).valid, "poll choice limit")
         let original = "Hello & goodbye? #swift + 日本語 👋\nSecond line"
         let url = ComposerModel.intentURL(for: original)
         check(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first?.value == original, "handoff URL encoding")
@@ -363,7 +372,6 @@ enum SelfCheck {
             model.synonymEffort = .high
             model.draft.posts[0].text = "First draft"
             model.draft.audience = .following
-            model.draft.plannedDate = Date(timeIntervalSince1970: 1800000000)
             let firstID = model.draft.id
             check(model.save(), "save first draft")
             check(model.drafts.count == 1, "saved draft appears in library")
@@ -376,7 +384,7 @@ enum SelfCheck {
             let restored = ComposerModel(directory: directory, preferences: SelfCheck.preferences(for: directory))
             check(restored.synonymModel == .sonnet && restored.synonymEffort == .high, "model and reasoning restore from a fresh preferences instance")
             check(restored.draft.posts[0].text == "Revised draft", "restore text")
-            check(restored.draft.audience == .following && restored.draft.plannedDate != nil, "restore metadata")
+            check(restored.draft.audience == .following, "restore reply metadata")
             model.draft.posts.append(Post())
             check(model.draft.posts.count == 2 && !model.canPost, "empty thread post prevents handoff")
             model.draft.posts[1].text = "Second post"
@@ -393,10 +401,6 @@ enum SelfCheck {
             check(model.showDrafts, "loading a draft keeps drawer open")
             model.removePost(model.draft.posts[1].id)
             check(model.draft.posts.count == 1 && model.activePostID == model.draft.posts[0].id, "remove thread post")
-            model.draft.posts[0].attachments = [Attachment(name: "test.png", data: Data([1, 2, 3]), alt: "An image")]
-            check(model.save(), "save attachments")
-            let archive = try store.read()
-            check(archive.current.posts[0].attachments.first?.alt == "An image", "attachment descriptions persist")
             model.deleteDraft(firstID)
             check(!model.draft.hasContent && model.drafts.count == 1, "delete current draft")
             let afterDelete = try store.read()
@@ -406,8 +410,66 @@ enum SelfCheck {
             check(protected.error != nil && !protected.save(), "corrupt storage is protected")
             let untouched = try Data(contentsOf: store.file)
             check(untouched == Data("bad json".utf8), "corrupt file is not overwritten")
+
+            let legacyStore = DraftStorage(directory: directory.appendingPathComponent("legacy"))
+            let legacyPost: [String: Any] = [
+                "id": UUID().uuidString, "text": "Keep this writing",
+                "attachments": [["id": UUID().uuidString, "name": "old.gif", "data": "AQID", "alt": "Old image"]],
+                "poll": ["choices": ["Yes", "No"], "days": 1, "hours": 0, "minutes": 0]
+            ]
+            let legacyID = UUID()
+            let legacyDraft: [String: Any] = [
+                "id": legacyID.uuidString,
+                "posts": [legacyPost, ["id": UUID().uuidString, "text": "Second post", "attachments": []]],
+                "audience": "following", "plannedDate": 12345, "modified": 0
+            ]
+            var mediaOnlyPost = legacyPost
+            mediaOnlyPost["text"] = ""
+            let mediaOnlyDraft: [String: Any] = [
+                "id": UUID().uuidString, "posts": [mediaOnlyPost], "audience": "everyone", "modified": 0
+            ]
+            let legacyData = try JSONSerialization.data(withJSONObject: [
+                "version": 1, "current": legacyDraft, "drafts": [legacyDraft, mediaOnlyDraft]
+            ])
+            try FileManager.default.createDirectory(at: legacyStore.directory, withIntermediateDirectories: true)
+            try legacyData.write(to: legacyStore.file)
+            let migrated = try legacyStore.read()
+            check(migrated.version == 2 && migrated.current.id == legacyID &&
+                  migrated.current.posts.map(\.text) == ["Keep this writing", "Second post"] && migrated.current.audience == .following,
+                  "archive migration preserves writing, thread posts, identities, and reply metadata")
+            check(migrated.drafts.map(\.id) == [legacyID], "migration removes saved drafts whose only content was retired feature data")
+            func containsRetiredFields(_ value: Any) -> Bool {
+                if let object = value as? [String: Any] {
+                    return object.keys.contains { ["attachments", "poll", "plannedDate"].contains($0) } ||
+                        object.values.contains(where: containsRetiredFields)
+                }
+                if let array = value as? [Any] { return array.contains(where: containsRetiredFields) }
+                return false
+            }
+            let migratedData = try Data(contentsOf: legacyStore.file)
+            let migratedJSON = try JSONSerialization.jsonObject(with: migratedData)
+            check(!containsRetiredFields(migratedJSON),
+                  "migration permanently removes retired data from current and saved drafts")
+            _ = try legacyStore.read()
+            let rereadData = try Data(contentsOf: legacyStore.file)
+            check(rereadData == migratedData, "current archives do not repeat the migration")
+            let emptyLegacyData = try JSONSerialization.data(withJSONObject: [
+                "version": 1, "current": mediaOnlyDraft, "drafts": [mediaOnlyDraft]
+            ])
+            try emptyLegacyData.write(to: legacyStore.file)
+            let emptyMigrated = try legacyStore.read()
+            check(emptyMigrated.current.posts.count == 1 && !emptyMigrated.current.hasContent && emptyMigrated.drafts.isEmpty,
+                  "retiring media-only content preserves an empty current editor")
+            let futureData = try JSONSerialization.data(withJSONObject: [
+                "version": 3, "current": legacyDraft, "drafts": [legacyDraft]
+            ])
+            try futureData.write(to: legacyStore.file)
+            let futureModel = ComposerModel(directory: legacyStore.directory, preferences: preferences)
+            check(futureModel.error != nil && !futureModel.save(), "unsupported archive versions cannot be overwritten")
+            let untouchedFuture = try Data(contentsOf: legacyStore.file)
+            check(untouchedFuture == futureData, "unsupported archive remains untouched")
         } catch { fputs("FAIL: \(error)\n", stderr); exit(1) }
-        print("Passed \(count) checks: character weighting, post validation, URL encoding, drafts, threads, attachments, and storage recovery.")
+        print("Passed \(count) checks: character weighting, post validation, URL encoding, drafts, threads, archive migration, and storage recovery.")
     }
 
     @MainActor private static func synonymInterface(model: ComposerModel, window: NSWindow, service: SynonymStub,

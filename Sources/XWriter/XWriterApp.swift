@@ -243,7 +243,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         item("Save Draft", action: #selector(saveDraft), key: "s", in: file)
         item("Toggle Drafts", action: #selector(drafts), key: "d", in: file)
         file.addItem(.separator())
-        item("Add Photos…", action: #selector(addPhotos), key: "o", in: file)
         item("Continue on X…", action: #selector(post), key: "\r", in: file)
         file.addItem(.separator())
         item("Close", action: #selector(close), key: "w", in: file)
@@ -258,7 +257,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         item("Select All", action: #selector(NSText.selectAll(_:)), key: "a", in: edit, responder: true)
         edit.addItem(.separator())
         item("Find Synonyms", action: #selector(findSynonyms), key: " ", modifiers: .control, in: edit)
-        item("Emoji & Symbols", action: #selector(NSApplication.orderFrontCharacterPalette(_:)), key: " ", modifiers: [.command, .control], in: edit, target: NSApp)
 
         let view = submenu("View", in: menu)
         item("Light", action: #selector(light), in: view)
@@ -295,7 +293,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc private func newPost() { model.newDraft(); show() }
     @objc private func saveDraft() { if model.save() { model.notify("Draft saved") } }
     @objc private func drafts() { model.toggleDrafts(); show() }
-    @objc private func addPhotos() { model.pickImages() }
     @objc private func findSynonyms() {
         guard let editor = window.firstResponder as? ComposerTextView else {
             model.notify("Place the cursor in a post to find synonyms.")

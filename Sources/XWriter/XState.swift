@@ -24,50 +24,27 @@ enum ReplyAudience: String, Codable, CaseIterable, Identifiable {
     }
 }
 
-struct Attachment: Codable, Identifiable, Equatable {
-    var id = UUID()
-    var name: String
-    var data: Data
-    var alt = ""
-    var isGIF: Bool { name.lowercased().hasSuffix(".gif") }
-}
-
-struct Poll: Codable, Equatable {
-    var choices = ["", ""]
-    var days = 1
-    var hours = 0
-    var minutes = 0
-    var valid: Bool {
-        choices.count >= 2 && choices.count <= 4 &&
-        choices.allSatisfy { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && $0.count <= 25 } &&
-        (5...10080).contains(days * 1440 + hours * 60 + minutes)
-    }
-}
-
 struct Post: Codable, Identifiable, Equatable {
     var id = UUID()
     var text = ""
-    var attachments: [Attachment] = []
-    var poll: Poll?
-    var hasContent: Bool { !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty || poll != nil }
-    var valid: Bool { hasContent && TweetLength.count(text) <= TweetLength.limit && (poll?.valid ?? true) }
+    var hasContent: Bool { !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    var valid: Bool { hasContent && TweetLength.count(text) <= TweetLength.limit }
 }
 
 struct Draft: Codable, Identifiable, Equatable {
     var id = UUID()
     var posts = [Post()]
     var audience = ReplyAudience.everyone
-    var plannedDate: Date?
     var modified = Date()
     var hasContent: Bool { posts.contains(where: \.hasContent) }
     var title: String {
         let text = posts.first?.text.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return text.isEmpty ? (posts.first?.poll != nil ? "Untitled poll" : "Photo post") : text
+        return text.isEmpty ? "Untitled post" : text
     }
 }
 
 struct DraftArchive: Codable {
-    var version = 1
+    var version = 2
     var current = Draft()
     var drafts: [Draft] = []
 }
@@ -77,10 +54,16 @@ struct DraftStorage {
     var file: URL { directory.appendingPathComponent("drafts.json") }
     func read() throws -> DraftArchive {
         guard FileManager.default.fileExists(atPath: file.path) else { return DraftArchive() }
-        let archive = try JSONDecoder().decode(DraftArchive.self, from: Data(contentsOf: file))
-        guard archive.version == 1, !archive.current.posts.isEmpty,
+        var archive = try JSONDecoder().decode(DraftArchive.self, from: Data(contentsOf: file))
+        guard (1...2).contains(archive.version), !archive.current.posts.isEmpty,
               archive.drafts.allSatisfy({ !$0.posts.isEmpty }) else {
             throw CocoaError(.fileReadCorruptFile)
+        }
+        if archive.version == 1 {
+            // Re-encoding removes the retired media, poll, and planned-date fields.
+            archive.version = 2
+            archive.drafts.removeAll { !$0.hasContent }
+            try write(archive)
         }
         return archive
     }
@@ -144,7 +127,7 @@ final class ComposerModel: ObservableObject {
         var readError: String?
         do { initial = try storage.read() }
         catch {
-            readError = "Your draft file could not be read. It has been left untouched at \(storage.file.path). New drafts cannot be saved until this file is repaired or moved."
+            readError = "Your draft file could not be loaded or upgraded: \(error.localizedDescription) It has been left untouched at \(storage.file.path). New drafts cannot be saved until this file is repaired or moved."
             canSave = false
         }
         if let savedModel, ClaudeModel(rawValue: savedModel) == nil {
@@ -227,46 +210,6 @@ final class ComposerModel: ObservableObject {
         if activePostID == id { activePostID = draft.posts.last!.id }
     }
 
-    func pickImages(gifOnly: Bool = false) {
-        let panel = NSOpenPanel()
-        panel.allowedContentTypes = gifOnly ? [.gif] : [.png, .jpeg, .heic, .tiff, .gif, .webP]
-        panel.allowsMultipleSelection = !gifOnly
-        panel.prompt = "Add"
-        panel.message = gifOnly ? "Choose a GIF to attach to your post." : "Choose up to four images."
-        let postID = activePostID
-        panel.begin { [weak self] result in
-            guard result == .OK else { return }
-            self?.addImages(panel.urls, to: postID)
-        }
-    }
-
-    func addImages(_ urls: [URL], to postID: UUID) {
-        guard let index = draft.posts.firstIndex(where: { $0.id == postID }) else { return }
-        guard draft.posts[index].poll == nil else { error = "Remove the poll before adding images."; return }
-        for url in urls {
-            guard draft.posts[index].attachments.count < 4 else { notify("You can attach up to 4 images."); break }
-            do {
-                let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
-                guard size <= 15 * 1024 * 1024 else { error = "\(url.lastPathComponent) is larger than 15 MB."; continue }
-                let data = try Data(contentsOf: url)
-                guard NSImage(data: data) != nil else { error = "\(url.lastPathComponent) isn't a supported image."; continue }
-                draft.posts[index].attachments.append(Attachment(name: url.lastPathComponent, data: data))
-            } catch { self.error = "Couldn't open \(url.lastPathComponent): \(error.localizedDescription)" }
-        }
-    }
-
-    func pasteImage(_ image: NSImage, to postID: UUID) {
-        guard let index = draft.posts.firstIndex(where: { $0.id == postID }),
-              draft.posts[index].attachments.count < 4, draft.posts[index].poll == nil,
-              let tiff = image.tiffRepresentation,
-              let data = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) else {
-            notify("Remove an attachment or poll before pasting an image.")
-            return
-        }
-        guard data.count <= 15 * 1024 * 1024 else { error = "This image is larger than 15 MB."; return }
-        draft.posts[index].attachments.append(Attachment(name: "Pasted image.png", data: data))
-    }
-
     func chooseAvatar() {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.png, .jpeg, .heic]
@@ -324,24 +267,5 @@ final class ComposerModel: ObservableObject {
             return
         }
         if useClipboard { notify("Text copied — paste it into X with ⌘V") }
-    }
-
-    func exportImages(_ post: Post) {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.canCreateDirectories = true
-        panel.prompt = "Save images here"
-        panel.begin { [weak self] result in
-            guard result == .OK, let directory = panel.url, let self else { return }
-            do {
-                for (i, image) in post.attachments.enumerated() {
-                    let ext = (image.name as NSString).pathExtension
-                    let name = "XWriter-\(image.id.uuidString.prefix(8))-\(i + 1).\(ext.isEmpty ? "png" : ext)"
-                    try image.data.write(to: directory.appendingPathComponent(name), options: .atomic)
-                }
-                NSWorkspace.shared.open(directory)
-            } catch { self.error = "Couldn't export images: \(error.localizedDescription)" }
-        }
     }
 }
