@@ -19,13 +19,18 @@ struct SynonymToolbar<Content: View>: View {
         case .ready(let lists):
             HStack(spacing: 8) {
                 VStack(alignment: .leading, spacing: 5) {
-                    Text("Latin").frame(height: 17)
-                    Text("Germanic").frame(height: 17)
-                }.font(.system(size: 11)).foregroundStyle(Theme.secondary)
+                    HStack(spacing: 0) {
+                        Image(systemName: "laurel.leading")
+                        Image(systemName: "laurel.trailing")
+                    }
+                    .font(.system(size: 13)).frame(width: 17, height: 17)
+                    .help("Latin-rooted synonyms")
+                    ComposerIcon(kind: .oak, size: 17).help("Germanic-rooted synonyms")
+                }.foregroundStyle(Theme.secondary).accessibilityHidden(true)
                 ScrollView(.horizontal) {
                     VStack(alignment: .leading, spacing: 5) {
-                        row(lists.latin)
-                        row(lists.germanic)
+                        row(lists.latin, label: "Latin-rooted synonyms")
+                        row(lists.germanic, label: "Germanic-rooted synonyms")
                     }
                 }.scrollIndicators(.hidden).frame(height: 39)
             }
@@ -34,7 +39,7 @@ struct SynonymToolbar<Content: View>: View {
         }
     }
 
-    private func row(_ words: [String]) -> some View {
+    private func row(_ words: [String], label: String) -> some View {
         HStack(spacing: 12) {
             if words.isEmpty {
                 Text("None found").foregroundStyle(Theme.secondary)
@@ -49,5 +54,6 @@ struct SynonymToolbar<Content: View>: View {
             }
         }
         .font(.system(size: 13)).frame(height: 17).fixedSize()
+        .accessibilityElement(children: .contain).accessibilityLabel(label)
     }
 }

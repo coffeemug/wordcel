@@ -7,13 +7,13 @@ struct SynonymLists: Codable, Equatable {
     var germanic: [String]
 
     func validated() throws -> SynonymLists {
-        let allowed = CharacterSet.letters.union(.nonBaseCharacters).union(CharacterSet(charactersIn: " '-\u{2019}"))
+        let allowed = CharacterSet.letters.union(.nonBaseCharacters).union(CharacterSet(charactersIn: "'-\u{2019}"))
         let words = latin + germanic
-        guard latin.count <= 13, germanic.count <= 13,
-              words.allSatisfy({ !$0.trimmingCharacters(in: .whitespaces).isEmpty && $0.count <= 48 &&
+        guard latin.count <= 6, germanic.count <= 6,
+              words.allSatisfy({ !$0.isEmpty && $0.count <= 48 &&
                   $0.unicodeScalars.contains(where: CharacterSet.letters.contains) &&
                   $0.unicodeScalars.allSatisfy(allowed.contains) }) else { throw ClaudeCLIError.invalidResponse }
-        let normalized = words.map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+        let normalized = words.map { $0.lowercased() }
         guard Set(normalized).count == normalized.count else { throw ClaudeCLIError.invalidResponse }
         return SynonymLists(latin: Array(normalized.prefix(latin.count)), germanic: Array(normalized.suffix(germanic.count)))
     }
@@ -23,6 +23,12 @@ struct SynonymTarget {
     let text: String
     let range: NSRange
     var word: String { (text as NSString).substring(with: range) }
+    var sentence: String {
+        let tokenizer = NLTokenizer(unit: .sentence)
+        tokenizer.string = text
+        let start = String.Index(utf16Offset: range.location, in: text)
+        return String(text[tokenizer.tokenRange(at: start)]).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 
     static func capture(text: String, selection: NSRange) -> SynonymTarget? {
         guard Range(selection, in: text) != nil else { return nil }
@@ -72,7 +78,7 @@ final class SynonymController: ObservableObject {
 
     init(service: any SynonymService) { self.service = service }
 
-    func lookup(in editor: ComposerTextView) {
+    func lookup(in editor: ComposerTextView, model: ClaudeModel, effort: ClaudeEffort) {
         dismiss()
         guard !editor.hasMarkedText(),
               let target = SynonymTarget.capture(text: editor.string, selection: editor.selectedRange()) else {
@@ -99,7 +105,7 @@ final class SynonymController: ObservableObject {
                     NSApp.activate(ignoringOtherApps: true)
                     state = .loading
                 }
-                let lists = try await service.synonyms(for: target.word).validated()
+                let lists = try await service.synonyms(for: target.word, in: target.sentence, model: model, effort: effort).validated()
                 try Task.checkCancellation()
                 guard requestID == id else { return }
                 guard target.matches(editor) else { dismiss(); return }

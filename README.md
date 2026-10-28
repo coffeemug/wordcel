@@ -15,7 +15,7 @@ The build produces an ad-hoc signed `XWriter.app` in the project directory. You 
 
 ## Features
 
-- Compact, resizable, draggable composer with X-style colors, spacing, icon buttons, reply controls, and an X Premium counter: a perimeter ring with a 20-to-1 countdown at 260–279 characters, then an unnumbered circle that fills from the bottom at 280 and beyond, up to 25,000.
+- Compact, resizable, draggable composer with X-style colors, spacing, icon buttons, a synonym model picker, and an X Premium counter: a perimeter ring with a 20-to-1 countdown at 260–279 characters, then an unnumbered circle that fills from the bottom at 280 and beyond, up to 25,000.
 - The window grows downward as you type, up to 760 points or the available screen height, then scrolls. Deleting text shrinks it again.
 - Light, dark, and system appearance from the View menu.
 - Native text selection, undo/redo, spell checking, emoji picker, and highlighting for links, hashtags, and mentions.
@@ -37,9 +37,11 @@ The character counter approximates X's weighting, including CJK characters, comb
 
 Install the official [Claude Code CLI](https://code.claude.com/docs/en/setup) and use a Claude subscription that includes Claude Code. Put the cursor inside a word (or immediately after it) and press **⌃Space**. The first lookup opens Claude Code's own browser sign-in flow. XWriter uses a separate CLI profile at `~/Library/Application Support/XWriter/claude-code`; the CLI manages all authentication. XWriter does not read or copy its credentials and does not use API-key billing.
 
-While Claude runs in the background, the toolbar icons become `pulling synonyms...` with cycling dots. Results appear in two rows, Latin above Germanic. Click a synonym to replace just that occurrence. Capitalization and native undo/redo are preserved. Suggestions stay visible when switching apps, toggling the drawer, or moving the cursor within the same word. Press **Esc**, change the target word, or move the cursor outside it to cancel the lookup and restore the icons. Long result rows can be scrolled horizontally.
+While Claude runs in the background, the toolbar icons become `pulling synonyms...` with cycling dots. Results appear in two rows of up to six context-fitting suggestions: Latin beside a laurel symbol above Germanic beside an oak leaf. Click a synonym to replace just that occurrence. Capitalization and native undo/redo are preserved. Suggestions stay visible when switching apps, toggling the drawer, or moving the cursor within the same word. Press **Esc**, change the target word, or move the cursor outside it to cancel the lookup and restore the icons. Long result rows can be scrolled horizontally.
 
-Only the target word is sent, not the post or attachments. Each lookup uses a fresh temporary working directory, no session persistence, and no tools, MCP servers, skills, or user/project hooks. Claude may still misclassify a word's origins; suggestions are not verified dictionary entries. Empty groups are shown as “None found.”
+The blue model link with the sparkle icon above the toolbar selects Fable 5.1 (the default), Opus 5.5, Sonnet 5.5, or Haiku 5.5. The same dropdown offers Low, Medium (the default), High, Extra high, and Max reasoning levels. Both choices are saved in macOS preferences across restarts and apply to the next lookup; existing suggestions stay visible.
+
+The target word and the sentence containing it are sent to the selected model so Claude can match its meaning and grammatical role. Suggestions must be single words, not phrases such as “progress report.” Other sentences and attachments are not sent. Each lookup uses a fresh temporary working directory, no session persistence, and no tools, MCP servers, skills, or user/project hooks. Claude may still misclassify a word's origins; suggestions are not verified dictionary entries. Empty groups are shown as “None found.”
 
 If macOS intercepts **⌃Space** to switch input sources, change or disable that binding in **System Settings → Keyboard → Keyboard Shortcuts → Input Sources**. **Edit → Find Synonyms** also starts a lookup. Update Claude Code if it reports unsupported command-line options.
 

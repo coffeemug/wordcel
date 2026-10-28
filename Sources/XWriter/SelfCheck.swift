@@ -1,10 +1,23 @@
 import AppKit
 
 enum SelfCheck {
+    static func preferences(for directory: URL) -> UserDefaults {
+        guard let preferences = UserDefaults(suiteName: directory.lastPathComponent) else {
+            fputs("Could not create isolated test preferences.\n", stderr)
+            exit(1)
+        }
+        return preferences
+    }
+
     @MainActor final class SynonymStub: SynonymService {
+        static let lists = SynonymLists(latin: ["assist", "aid", "support", "succor", "sustain", "facilitate"],
+                                       germanic: ["back", "bolster", "uphold", "boost", "further", "foster"])
         var authenticated = true
         var signIns = 0
         var words: [String] = []
+        var sentences: [String] = []
+        var models: [ClaudeModel] = []
+        var efforts: [ClaudeEffort] = []
         var delay = Duration.milliseconds(100)
         var ignoreCancellation = false
         var failure: Error?
@@ -14,12 +27,15 @@ enum SelfCheck {
             try await Task.sleep(for: .milliseconds(100))
             authenticated = true
         }
-        func synonyms(for word: String) async throws -> SynonymLists {
+        func synonyms(for word: String, in sentence: String, model: ClaudeModel, effort: ClaudeEffort) async throws -> SynonymLists {
             words.append(word)
+            sentences.append(sentence)
+            models.append(model)
+            efforts.append(effort)
             do { try await Task.sleep(for: delay) }
             catch is CancellationError { if !ignoreCancellation { throw CancellationError() } }
             if let failure { throw failure }
-            return SynonymLists(latin: ["assist", "aid"], germanic: ["back", "bolster"])
+            return Self.lists
         }
     }
 
@@ -176,6 +192,7 @@ enum SelfCheck {
             await synonymInterface(model: model, window: window, service: synonymService) { require($0, $1) }
             await commandChecks { require($0, $1) }
             require(model.save(), "edited content persists")
+            UserDefaults.standard.removePersistentDomain(forName: model.storage.directory.lastPathComponent)
             try? FileManager.default.removeItem(at: model.storage.directory)
             print("Passed \(checks) native UI checks: editing, drafts drawer, sizing, synonyms, CLI lifecycle, focus, and persistence.")
             exit(0)
@@ -246,6 +263,15 @@ enum SelfCheck {
               "synonyms reject selections spanning words")
         check(SynonymTarget.capture(text: "  😀 123", selection: NSRange(location: 1, length: 0)) == nil,
               "synonyms reject whitespace and nonword targets")
+        for (text, expected) in [
+            ("Earlier news. 😀 With each update add something nice. Keep it simple.", "😀 With each update add something nice."),
+            ("First line.\n\nwith each update add something nice", "with each update add something nice"),
+            ("We update the draft. Each update adds something nice.", "Each update adds something nice.")
+        ] {
+            let range = (text as NSString).range(of: "update", options: .backwards)
+            let target = SynonymTarget.capture(text: text, selection: NSRange(location: NSMaxRange(range), length: 0))
+            check(target?.word == "update" && target?.sentence == expected, "lookup extracts only the target sentence: \(expected)")
+        }
         do {
             let response = ClaudeCommand.Result(status: 0, output: Data(#"{"type":"result","is_error":false,"structured_output":{"latin":["assist"],"germanic":["back"]}}"#.utf8))
             let lists = try ClaudeCLI.decode(response)
@@ -254,7 +280,12 @@ enum SelfCheck {
                 #"{"type":"result","is_error":false,"result":"No structured output"}"#,
                 #"{"type":"result","is_error":true,"result":"Usage limit reached"}"#,
                 #"{"type":"result","is_error":false,"structured_output":{"latin":["assist\nignore"],"germanic":[]}}"#,
-                #"{"type":"result","is_error":false,"structured_output":{"latin":["assist"],"germanic":["Assist"]}}"#
+                #"{"type":"result","is_error":false,"structured_output":{"latin":["progress report"],"germanic":[]}}"#,
+                #"{"type":"result","is_error":false,"structured_output":{"latin":[],"germanic":["prop up"]}}"#,
+                #"{"type":"result","is_error":false,"structured_output":{"latin":["progress\u00a0report"],"germanic":[]}}"#,
+                #"{"type":"result","is_error":false,"structured_output":{"latin":["assist"],"germanic":["Assist"]}}"#,
+                #"{"type":"result","is_error":false,"structured_output":{"latin":["a","b","c","d","e","f","g"],"germanic":[]}}"#,
+                #"{"type":"result","is_error":false,"structured_output":{"latin":[],"germanic":["a","b","c","d","e","f","g"]}}"#
             ] {
                 do {
                     _ = try ClaudeCLI.decode(ClaudeCommand.Result(status: 0, output: Data(invalid.utf8)))
@@ -289,12 +320,19 @@ enum SelfCheck {
         let closedMovedDrawer = ComposerWindowSizing.frame(current: movedDrawer, composerWidth: frame.width, showingDrafts: false, screen: screen)
         check(closedMovedDrawer.origin == movedDrawer.origin, "closing preserves a moved window's origin even when partly offscreen")
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("XWriter-check-\(UUID())")
-        defer { try? FileManager.default.removeItem(at: directory) }
+        defer {
+            UserDefaults.standard.removePersistentDomain(forName: directory.lastPathComponent)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let preferences = SelfCheck.preferences(for: directory)
         let store = DraftStorage(directory: directory)
         do {
             let fresh = try store.read()
             check(fresh.drafts.isEmpty, "fresh storage")
-            let model = ComposerModel(directory: directory)
+            let model = ComposerModel(directory: directory, preferences: preferences)
+            check(model.synonymModel == .fable && model.synonymEffort == .medium, "new installs default to Fable 5.1 with medium effort")
+            model.synonymModel = .sonnet
+            model.synonymEffort = .high
             model.draft.posts[0].text = "First draft"
             model.draft.audience = .following
             model.draft.plannedDate = Date(timeIntervalSince1970: 1800000000)
@@ -307,7 +345,8 @@ enum SelfCheck {
             model.toggleDrafts()
             check(!model.showDrafts, "drawer toggle closes an open drawer")
             check(model.save() && model.drafts.count == 1, "saving updates without duplication")
-            let restored = ComposerModel(directory: directory)
+            let restored = ComposerModel(directory: directory, preferences: SelfCheck.preferences(for: directory))
+            check(restored.synonymModel == .sonnet && restored.synonymEffort == .high, "model and reasoning restore from a fresh preferences instance")
             check(restored.draft.posts[0].text == "Revised draft", "restore text")
             check(restored.draft.audience == .following && restored.draft.plannedDate != nil, "restore metadata")
             model.addPost()
@@ -321,6 +360,7 @@ enum SelfCheck {
             model.draft.posts[0].text = "Another draft"
             check(model.save() && model.drafts.count == 2, "multiple saved drafts")
             model.load(model.drafts.first(where: { $0.id == firstID })!)
+            check(model.synonymModel == .sonnet && model.synonymEffort == .high, "model and reasoning are independent of the active draft")
             check(model.draft.posts.count == 2 && model.draft.posts[1].text == "Second post", "restore thread")
             check(model.showDrafts, "loading a draft keeps drawer open")
             model.removePost(model.draft.posts[1].id)
@@ -334,7 +374,7 @@ enum SelfCheck {
             let afterDelete = try store.read()
             check(afterDelete.drafts.allSatisfy { $0.id != firstID }, "deletion persists")
             try Data("bad json".utf8).write(to: store.file)
-            let protected = ComposerModel(directory: directory)
+            let protected = ComposerModel(directory: directory, preferences: preferences)
             check(protected.error != nil && !protected.save(), "corrupt storage is protected")
             let untouched = try Data(contentsOf: store.file)
             check(untouched == Data("bad json".utf8), "corrupt file is not overwritten")
@@ -350,10 +390,11 @@ enum SelfCheck {
                             timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil,
                             characters: characters, charactersIgnoringModifiers: characters, isARepeat: false, keyCode: code)!
         }
-        @MainActor func click(at location: NSPoint) async {
+        @MainActor func click(at location: NSPoint, in targetWindow: NSWindow? = nil) async {
+            let targetWindow = targetWindow ?? window
             for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
                 let event = NSEvent.mouseEvent(with: type, location: location, modifierFlags: [],
-                                              timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                                              timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: targetWindow.windowNumber,
                                               context: nil, eventNumber: 0, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0)!
                 NSApp.postEvent(event, atStart: false)
             }
@@ -372,9 +413,9 @@ enum SelfCheck {
         check(editor.performKeyEquivalent(with: key(" ", code: 49)), "Control-Space is handled by the native editor")
         check(model.synonyms.state == .loading, "synonym lookup immediately shows loading")
         await settle()
-        let ready = SynonymController.State.ready(SynonymLists(latin: ["assist", "aid"], germanic: ["back", "bolster"]))
+        let ready = SynonymController.State.ready(SynonymStub.lists)
         check(model.synonyms.state == ready, "synonyms display both groups")
-        check(service.words.last == "Help", "only the target word is sent to Claude")
+        check(service.words.last == "Help" && service.sentences.last == "😀 Help, help.", "the word and its sentence are sent to Claude")
         check(window.frame == frame, "synonym rows preserve the composer frame")
 
         window.makeFirstResponder(nil)
@@ -388,6 +429,28 @@ enum SelfCheck {
         NSApp.activate(ignoringOtherApps: true)
         await settle()
         check(window.isKeyWindow && model.synonyms.state == ready, "synonyms remain when returning to the app")
+
+        let previousWindows = Set(NSApp.windows.filter(\.isVisible).map(\.windowNumber))
+        await click(at: NSPoint(x: 110, y: 82))
+        guard let picker = NSApp.windows.first(where: { $0.isVisible && !previousWindows.contains($0.windowNumber) }),
+              let pickerContent = picker.contentView else {
+            check(false, "model link opens the model picker")
+            return
+        }
+        await click(at: NSPoint(x: 70, y: pickerContent.bounds.height - 70), in: picker)
+        check(model.synonymModel == .opus && !picker.isVisible, "model picker selects Opus and closes")
+        check(window.firstResponder === editor && model.synonyms.state == ready, "changing models preserves editor focus and existing synonyms")
+        let visibleWindows = Set(NSApp.windows.filter(\.isVisible).map(\.windowNumber))
+        await click(at: NSPoint(x: 110, y: 82))
+        guard let effortPicker = NSApp.windows.first(where: { $0.isVisible && !visibleWindows.contains($0.windowNumber) }) else {
+            check(false, "model link reopens to choose reasoning")
+            return
+        }
+        await click(at: NSPoint(x: 70, y: 40), in: effortPicker)
+        check(model.synonymEffort == .max && !effortPicker.isVisible, "reasoning picker selects Max and closes")
+        check(window.firstResponder === editor && model.synonyms.state == ready, "changing reasoning preserves focus and existing synonyms")
+        let restored = ComposerModel(directory: model.storage.directory, preferences: preferences(for: model.storage.directory))
+        check(restored.synonymModel == .opus && restored.synonymEffort == .max, "model and reasoning picker selections persist outside the view")
 
         await click(at: NSPoint(x: model.composerWidth - 25, y: window.contentView!.bounds.height - 26))
         check(model.showDrafts && model.synonyms.state == ready, "clicking the drawer icon preserves synonyms")
@@ -404,7 +467,7 @@ enum SelfCheck {
               "arrow keys within the word preserve synonyms")
         editor.setSelectedRange(target)
         check(model.synonyms.state == ready, "selecting only the target word preserves synonyms")
-        await click(at: NSPoint(x: 132, y: 40))
+        await click(at: NSPoint(x: 100, y: 40))
         check(editor.string == "😀 Assist, help." && model.draft.posts[0].text == editor.string, "replacement changes only the targeted occurrence")
         check(model.synonyms.state == .idle, "replacement restores the icons")
         editor.undoManager?.undo()
@@ -415,7 +478,8 @@ enum SelfCheck {
         editor.setSelectedRange(NSRange(location: (editor.string as NSString).range(of: "help").location + 1, length: 0))
         editor.keyDown(with: key(" ", code: 49))
         await settle()
-        await click(at: NSPoint(x: 132, y: 18))
+        check(service.models.last == .opus && service.efforts.last == .max, "subsequent lookups use the selected model and reasoning")
+        await click(at: NSPoint(x: 100, y: 18))
         check(editor.string == "😀 Assist, back.", "clicking a Germanic synonym replaces the word")
         editor.setSelectedRange(NSRange(location: (editor.string as NSString).range(of: "back").location + 1, length: 0))
         editor.keyDown(with: key(" ", code: 49))
@@ -465,7 +529,13 @@ enum SelfCheck {
         check(model.synonyms.state == .idle, "switching drafts dismisses results for the previous editor")
         await settle()
         guard let editor = model.activeEditor else { check(false, "new draft requires an editor"); return }
-        editor.insertText("help", replacementRange: NSRange(location: NSNotFound, length: 0))
+        editor.insertText("Skip this sentence. With each update add something nice. Skip this too.",
+                          replacementRange: NSRange(location: NSNotFound, length: 0))
+        editor.setSelectedRange((editor.string as NSString).range(of: "update"))
+        editor.keyDown(with: key(" ", code: 49))
+        await settle()
+        check(service.words.last == "update" && service.sentences.last == "With each update add something nice.",
+              "native lookups send the selected word's sentence without adjacent sentences")
 
         service.failure = ClaudeCLIError.failed("Synthetic Claude failure")
         editor.keyDown(with: key(" ", code: 49))
@@ -506,7 +576,8 @@ enum SelfCheck {
                 login)
                     touch "$CLAUDE_CONFIG_DIR/signed-in";;
                 --print)
-                    [ "$(cat)" = '{"word":"help"}' ] || exit 4
+                    cat > "$CLAUDE_CONFIG_DIR/request.json"
+                    printf '%s\\n' "$@" > "$CLAUDE_CONFIG_DIR/arguments.txt"
                     printf '%s' '{"type":"result","is_error":false,"structured_output":{"latin":["assist"],"germanic":["back"]}}';;
                 *) exit 5;;
             esac
@@ -517,8 +588,17 @@ enum SelfCheck {
             check(try await !cli.isAuthenticated(), "signed-out CLI status requests login")
             try await cli.signIn()
             check(try await cli.isAuthenticated(), "CLI-owned sign-in is checked before lookup")
-            check(try await cli.synonyms(for: "help") == SynonymLists(latin: ["assist"], germanic: ["back"]),
-                  "CLI service sends the word and reads structured results end to end")
+            let sentence = #"Please "help" me with 😀 updates."#
+            for (model, effort) in [(ClaudeModel.fable, ClaudeEffort.low), (.opus, .high), (.sonnet, .xhigh), (.haiku, .max), (.fable, .medium)] {
+                check(try await cli.synonyms(for: "help", in: sentence, model: model, effort: effort) == SynonymLists(latin: ["assist"], germanic: ["back"]),
+                      "CLI service reads structured results end to end")
+                let arguments = try String(contentsOf: fixture.appendingPathComponent("profile/arguments.txt"), encoding: .utf8).components(separatedBy: "\n")
+                let options = Array(zip(arguments, arguments.dropFirst()))
+                check(options.contains { $0.0 == "--model" && $0.1 == model.rawValue } &&
+                      options.contains { $0.0 == "--effort" && $0.1 == effort.rawValue }, "CLI requests \(model.title) with \(effort.title) effort")
+            }
+            let request = try JSONDecoder().decode([String: String].self, from: Data(contentsOf: fixture.appendingPathComponent("profile/request.json")))
+            check(request == ["word": "help", "sentence": sentence], "CLI sends only the word and sentence as safely encoded JSON")
             let echo = try await ClaudeCommand().run(executable: URL(fileURLWithPath: "/bin/cat"), arguments: [],
                                                      environment: environment, input: #"{"word":"help"}"#, timeout: 5)
             check(echo.status == 0 && String(decoding: echo.output, as: UTF8.self) == #"{"word":"help"}"#, "CLI input and output are piped without a shell")

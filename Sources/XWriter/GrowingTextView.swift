@@ -65,8 +65,8 @@ struct GrowingTextView: NSViewRepresentable {
         }
         view.onSubmit = { [weak model] in model?.prepareHandoff() }
         view.onSynonymLookup = { [weak model, weak view] in
-            guard let view else { return }
-            model?.synonyms.lookup(in: view)
+            guard let model, let view else { return }
+            model.synonyms.lookup(in: view, model: model.synonymModel, effort: model.synonymEffort)
         }
         view.onSelectionChange = { [weak model, weak view] in
             guard let view else { return }

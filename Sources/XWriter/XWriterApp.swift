@@ -67,7 +67,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let isTesting = snapshotPath != nil || CommandLine.arguments.contains("--ui-test")
         let isolatedDirectory = isTesting ? FileManager.default.temporaryDirectory.appendingPathComponent("XWriter-preview-\(UUID())") : nil
         let previewSynonyms = isTesting ? SelfCheck.SynonymStub() : nil
-        model = ComposerModel(directory: isolatedDirectory, synonymService: previewSynonyms)
+        let preferences = isolatedDirectory.map { SelfCheck.preferences(for: $0) } ?? .standard
+        model = ComposerModel(directory: isolatedDirectory, synonymService: previewSynonyms, preferences: preferences)
         if CommandLine.arguments.contains("--demo") {
             model.draft.posts[0].text = "A little less scrolling. A little more writing.\n\nMade for the moments when you have something to say. ✨"
         }
@@ -120,7 +121,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
                 guard let self, let editor = self.model.activeEditor else { return }
                 editor.setSelectedRange(NSRange(location: 11, length: 0))
-                self.model.synonyms.lookup(in: editor)
+                self.model.synonyms.lookup(in: editor, model: self.model.synonymModel, effort: self.model.synonymEffort)
             }
         }
         if snapshotPath != nil {
@@ -298,7 +299,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             model.notify("Place the cursor in a post to find synonyms.")
             return
         }
-        model.synonyms.lookup(in: editor)
+        model.synonyms.lookup(in: editor, model: model.synonymModel, effort: model.synonymEffort)
     }
     @objc private func post() { model.prepareHandoff() }
     @objc private func close() { window.performClose(nil) }
@@ -322,6 +323,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         do {
             try bitmap.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: path))
             print("Snapshot saved: \(path) (\(bitmap.pixelsWide) × \(bitmap.pixelsHigh))")
+            UserDefaults.standard.removePersistentDomain(forName: model.storage.directory.lastPathComponent)
             try? FileManager.default.removeItem(at: model.storage.directory)
             exit(0)
         } catch { fputs("Snapshot failed: \(error)\n", stderr); exit(1) }

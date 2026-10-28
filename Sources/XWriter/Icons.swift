@@ -2,7 +2,7 @@ import SwiftUI
 
 // Drawn in the same 24-point coordinate space as the web composer's icons.
 struct ComposerIcon: View {
-    enum Kind { case close, drawer, photo, gif, poll, emoji, calendar, location, plus, globe }
+    enum Kind { case close, drawer, photo, gif, poll, emoji, calendar, location, plus, globe, oak }
     let kind: Kind
     var size: CGFloat = 20
 
@@ -56,6 +56,20 @@ struct ComposerIcon: View {
                 p.addEllipse(in: CGRect(x: 2, y: 2, width: 20, height: 20))
                 p.addEllipse(in: CGRect(x: 7.5, y: 2, width: 9, height: 20))
                 for y in [8.0, 16.0] { p.move(to: CGPoint(x: 3, y: y)); p.addLine(to: CGPoint(x: 21, y: y)) }
+            case .oak:
+                p.move(to: CGPoint(x: 12, y: 19))
+                p.addCurve(to: CGPoint(x: 6, y: 16), control1: CGPoint(x: 8, y: 20), control2: CGPoint(x: 4, y: 19))
+                p.addCurve(to: CGPoint(x: 4, y: 11), control1: CGPoint(x: 1, y: 17), control2: CGPoint(x: 1, y: 11))
+                p.addQuadCurve(to: CGPoint(x: 5, y: 9), control: CGPoint(x: 7, y: 12))
+                p.addCurve(to: CGPoint(x: 8, y: 5), control1: CGPoint(x: 1, y: 8), control2: CGPoint(x: 4, y: 3))
+                p.addCurve(to: CGPoint(x: 12, y: 2), control1: CGPoint(x: 8, y: 1), control2: CGPoint(x: 11, y: 1))
+                p.addCurve(to: CGPoint(x: 16, y: 5), control1: CGPoint(x: 13, y: 1), control2: CGPoint(x: 16, y: 1))
+                p.addCurve(to: CGPoint(x: 19, y: 9), control1: CGPoint(x: 20, y: 3), control2: CGPoint(x: 23, y: 8))
+                p.addQuadCurve(to: CGPoint(x: 20, y: 11), control: CGPoint(x: 17, y: 12))
+                p.addCurve(to: CGPoint(x: 18, y: 16), control1: CGPoint(x: 23, y: 11), control2: CGPoint(x: 23, y: 17))
+                p.addCurve(to: CGPoint(x: 12, y: 19), control1: CGPoint(x: 20, y: 19), control2: CGPoint(x: 16, y: 20))
+                p.closeSubpath()
+                p.move(to: CGPoint(x: 12, y: 23)); p.addLine(to: CGPoint(x: 12, y: 7))
             }
             context.stroke(p, with: .foreground, style: stroke)
         }

@@ -1,30 +1,40 @@
 import AppKit
 import SwiftUI
 
-struct ReplyPicker: View {
-    @Binding var selection: ReplyAudience
+struct ModelPicker: View {
+    @Binding var selection: ClaudeModel
+    @Binding var effort: ClaudeEffort
     var done: () -> Void
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Who can reply?").font(.system(size: 20, weight: .bold)).padding(.top, 8)
-            Text("Pick who can reply to this post.\nAnyone mentioned can always reply.")
-                .font(.system(size: 14)).foregroundStyle(Theme.secondary).padding(.bottom, 12)
-            ForEach(ReplyAudience.allCases) { audience in
-                Button {
-                    selection = audience
+            ForEach(ClaudeModel.allCases) { model in
+                option(model.title, selected: model == selection) {
+                    selection = model
                     done()
-                } label: {
-                    HStack(spacing: 12) {
-                        Image(systemName: audience.symbol).font(.system(size: 18, weight: .medium))
-                            .foregroundStyle(.white).frame(width: 40, height: 40).background(Theme.blue, in: Circle())
-                        Text(audience.title).font(.system(size: 14, weight: .semibold))
-                        Spacer(minLength: 8)
-                        if audience == selection { Image(systemName: "checkmark").foregroundStyle(Theme.blue).fontWeight(.bold) }
-                    }.padding(.vertical, 5).contentShape(Rectangle())
-                }.buttonStyle(.plain)
+                }
+                .accessibilityIdentifier("synonym-model-\(model.rawValue)")
+            }
+            Divider().padding(.vertical, 6)
+            Text("Reasoning").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.secondary)
+            ForEach(ClaudeEffort.allCases) { level in
+                option(level.title, selected: level == effort) {
+                    effort = level
+                    done()
+                }
+                .accessibilityIdentifier("synonym-effort-\(level.rawValue)")
             }
         }
-        .foregroundStyle(Theme.foreground).padding(20).frame(width: 330).background(Theme.background)
+        .foregroundStyle(Theme.foreground).padding(12).frame(width: 220).background(Theme.background)
+    }
+
+    private func option(_ title: String, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Text(title).font(.system(size: 14, weight: .semibold))
+                Spacer(minLength: 8)
+                if selected { Image(systemName: "checkmark").foregroundStyle(Theme.blue).fontWeight(.bold) }
+            }.padding(.vertical, 8).contentShape(Rectangle())
+        }.buttonStyle(.plain)
     }
 }
 

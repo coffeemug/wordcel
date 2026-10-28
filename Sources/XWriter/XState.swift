@@ -110,12 +110,19 @@ final class ComposerModel: ObservableObject {
     @Published var showHandoff = false
     @Published var error: String?
     @Published var toast: String?
+    @Published var synonymModel: ClaudeModel {
+        didSet { preferences.set(synonymModel.rawValue, forKey: "synonymModel") }
+    }
+    @Published var synonymEffort: ClaudeEffort {
+        didSet { preferences.set(synonymEffort.rawValue, forKey: "synonymEffort") }
+    }
     @Published var appearance: String {
         didSet { UserDefaults.standard.set(appearance, forKey: "appearance"); applyAppearance() }
     }
     @Published var avatar: NSImage?
     let storage: DraftStorage
     let synonyms: SynonymController
+    private let preferences: UserDefaults
     private var saveWork: DispatchWorkItem?
     private var toastWork: DispatchWorkItem?
     private var canSave = true
@@ -123,7 +130,12 @@ final class ComposerModel: ObservableObject {
     var onContentHeightChange: ((CGFloat) -> Void)?
     var onDraftsVisibilityChange: ((Bool) -> Void)?
 
-    init(directory: URL? = nil, synonymService: (any SynonymService)? = nil) {
+    init(directory: URL? = nil, synonymService: (any SynonymService)? = nil, preferences: UserDefaults = .standard) {
+        self.preferences = preferences
+        let savedModel = preferences.string(forKey: "synonymModel")
+        synonymModel = savedModel.flatMap(ClaudeModel.init(rawValue:)) ?? .fable
+        let savedEffort = preferences.string(forKey: "synonymEffort")
+        synonymEffort = savedEffort.flatMap(ClaudeEffort.init(rawValue:)) ?? .medium
         let base = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("XWriter", isDirectory: true)
         storage = DraftStorage(directory: base)
@@ -134,6 +146,12 @@ final class ComposerModel: ObservableObject {
         catch {
             readError = "Your draft file could not be read. It has been left untouched at \(storage.file.path). New drafts cannot be saved until this file is repaired or moved."
             canSave = false
+        }
+        if let savedModel, ClaudeModel(rawValue: savedModel) == nil {
+            readError = readError ?? "Your saved synonym model is no longer available. Using Fable 5.1; choose a model to save a new preference."
+        }
+        if let savedEffort, ClaudeEffort(rawValue: savedEffort) == nil {
+            readError = readError ?? "Your saved reasoning level is no longer available. Using Medium; choose a reasoning level to save a new preference."
         }
         draft = initial.current
         drafts = initial.drafts

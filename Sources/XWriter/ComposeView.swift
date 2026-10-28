@@ -3,7 +3,7 @@ import SwiftUI
 
 struct ComposeView: View {
     @ObservedObject var model: ComposerModel
-    @ViewState<Bool> private var replyPopover = false
+    @ViewState<Bool> private var modelPopover = false
     @ViewState<Bool> private var planPopover = false
     @ViewState<Bool> private var dropTarget = false
 
@@ -54,7 +54,7 @@ struct ComposeView: View {
                     withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(id, anchor: .bottom) }
                 }
             }
-            replyControl.measuringComposerHeight()
+            modelControl.measuringComposerHeight()
             toolbar.measuringComposerHeight()
         }
         .onPreferenceChange(ComposerHeightKey.self) { model.onContentHeightChange?($0) }
@@ -106,19 +106,24 @@ struct ComposeView: View {
         .background(WindowDragArea())
     }
 
-    private var replyControl: some View {
+    private var modelControl: some View {
         HStack {
-            Button { replyPopover.toggle() } label: {
+            Button { modelPopover.toggle() } label: {
                 HStack(spacing: 5) {
-                    Image(systemName: model.draft.audience.symbol).font(.system(size: 13, weight: .semibold))
-                    Text(model.draft.audience.label).font(.system(size: 14, weight: .bold))
+                    Image(systemName: "sparkles").font(.system(size: 13, weight: .semibold)).accessibilityHidden(true)
+                    Text(model.synonymModel.title).font(.system(size: 14, weight: .bold))
+                    Image(systemName: "chevron.down").font(.system(size: 10, weight: .semibold))
                 }
                 .foregroundStyle(Theme.blue).padding(.vertical, 8).padding(.horizontal, 10)
                 .contentShape(Capsule())
             }
-            .buttonStyle(.plain)
-            .popover(isPresented: $replyPopover, arrowEdge: .bottom) {
-                ReplyPicker(selection: $model.draft.audience) { replyPopover = false }
+            .buttonStyle(.plain).focusable(false)
+            .help("Choose the synonym model and reasoning level (\(model.synonymEffort.title.lowercased()) effort)")
+            .accessibilityLabel("Synonym model and reasoning")
+            .accessibilityValue("\(model.synonymModel.title), \(model.synonymEffort.title) reasoning")
+            .accessibilityIdentifier("synonym-model")
+            .popover(isPresented: $modelPopover, arrowEdge: .bottom) {
+                ModelPicker(selection: $model.synonymModel, effort: $model.synonymEffort) { modelPopover = false }
             }
             Spacer(minLength: 0)
         }
