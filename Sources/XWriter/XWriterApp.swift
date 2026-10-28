@@ -57,6 +57,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var resizeWork: DispatchWorkItem?
     private var composerWidthBeforeDrawer: CGFloat?
     private var frameAutosaveNameBeforeDrawer: NSWindow.FrameAutosaveName?
+    private var isResizingDraftsDrawer = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if let index = CommandLine.arguments.firstIndex(of: "--snapshot"), CommandLine.arguments.count > index + 1 {
@@ -79,7 +80,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if CommandLine.arguments.contains("--dark") { NSApp.appearance = NSAppearance(named: .darkAqua) }
         else { model.applyAppearance() }
         configureMenu()
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: ComposerWindowSizing.minimumHeight),
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: model.composerWidth, height: ComposerWindowSizing.minimumHeight),
                           styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                           backing: .buffered, defer: false)
         window.title = "XWriter"
@@ -95,7 +96,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         for button in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
             window.standardWindowButton(button)?.isHidden = true
         }
-        window.contentView = NSHostingView(rootView: ComposeView(model: model))
+        let hostingView = NSHostingView(rootView: ComposeView(model: model))
+        // Window sizing is managed here, independently of the drawer's intermediate SwiftUI layout.
+        hostingView.sizingOptions = []
+        window.contentView = hostingView
         window.center()
         if !isTesting { window.setFrameAutosaveName("XWriterComposer") }
         window.makeKeyAndOrderFront(nil)
@@ -132,6 +136,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private func resizeDraftsDrawer(_ visible: Bool) {
         guard let window else { return }
+        isResizingDraftsDrawer = true
+        defer {
+            isResizingDraftsDrawer = false
+            updateComposerWidth()
+        }
         if visible {
             composerWidthBeforeDrawer = window.frame.width
             // Don't restore the expanded drawer width as the composer width on the next launch.
@@ -152,12 +161,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if !visible {
             composerWidthBeforeDrawer = nil
             if let name = frameAutosaveNameBeforeDrawer {
-                window.setFrameAutosaveName(name)
+                // Reattaching autosave restores its saved frame, so save the current position first.
                 window.saveFrame(usingName: name)
+                window.setFrameAutosaveName(name)
                 frameAutosaveNameBeforeDrawer = nil
             }
             if let editor = model.activeEditor { window.makeFirstResponder(editor) }
         }
+    }
+
+    private func updateComposerWidth() {
+        let width = max(ComposerWindowSizing.minimumWidth, window.contentRect(forFrameRect: window.frame).width
+                        - (model.showDrafts ? ComposerWindowSizing.drawerWidth : 0))
+        if abs(model.composerWidth - width) > 0.5 { model.composerWidth = width }
+    }
+
+    func windowDidResize(_ notification: Notification) {
+        if !isResizingDraftsDrawer { updateComposerWidth() }
     }
 
     func windowDidEndLiveResize(_ notification: Notification) {

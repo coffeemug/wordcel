@@ -9,7 +9,7 @@ struct ComposeView: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            composer.frame(minWidth: ComposerWindowSizing.minimumWidth)
+            composer.frame(width: model.composerWidth)
             if model.showDrafts {
                 DraftsView(model: model)
                     .frame(width: ComposerWindowSizing.drawerWidth)
@@ -22,7 +22,8 @@ struct ComposeView: View {
         .alert("Something needs attention", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
             Button("OK") { model.error = nil }
         } message: { Text(model.error ?? "") }
-        .frame(minWidth: ComposerWindowSizing.minimumWidth + (model.showDrafts ? ComposerWindowSizing.drawerWidth : 0), minHeight: 300)
+        .frame(minWidth: ComposerWindowSizing.minimumWidth + (model.showDrafts ? ComposerWindowSizing.drawerWidth : 0),
+               maxWidth: .infinity, minHeight: 300, alignment: .leading)
         .ignoresSafeArea()
     }
 

@@ -11,7 +11,7 @@ enum ComposerWindowSizing {
         let drawer = showingDrafts ? drawerWidth : 0
         var result = current
         result.size.width = max(minimumWidth + drawer, min(composerWidth + drawer, screen.width))
-        result.origin.x = max(screen.minX, min(current.minX, screen.maxX - result.width))
+        if showingDrafts { result.origin.x = max(screen.minX, min(current.minX, screen.maxX - result.width)) }
         return result
     }
 

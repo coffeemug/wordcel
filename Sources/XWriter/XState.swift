@@ -95,6 +95,7 @@ final class ComposerModel: ObservableObject {
     @Published var draft: Draft { didSet { queueSave() } }
     @Published var drafts: [Draft]
     @Published var activePostID: UUID
+    @Published var composerWidth: CGFloat = 600
     @Published var showDrafts = false {
         didSet {
             if showDrafts != oldValue { onDraftsVisibilityChange?(showDrafts) }

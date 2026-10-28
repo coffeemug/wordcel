@@ -50,14 +50,15 @@ struct GrowingTextView: NSViewRepresentable {
         context.coordinator.measure(view)
         if model.activePostID == postID && (!view.didRequestFocus || model.activeEditor !== view) {
             view.didRequestFocus = true
-            DispatchQueue.main.async { [weak view] in
-                guard let view, model.activePostID == postID else { return }
-                view.window?.makeFirstResponder(view)
-            }
+            DispatchQueue.main.async { [weak view] in view?.onFocusRequest?() }
         } else if model.activePostID != postID { view.didRequestFocus = false }
     }
 
     private func configure(_ view: ComposerTextView, coordinator: Coordinator) {
+        view.onFocusRequest = { [weak model, weak view] in
+            guard let model, let view, model.activePostID == postID else { return }
+            view.window?.makeFirstResponder(view)
+        }
         view.onFocus = { [weak model, weak view] in
             model?.activePostID = postID
             model?.activeEditor = view
@@ -114,12 +115,19 @@ struct GrowingTextView: NSViewRepresentable {
 }
 
 final class ComposerTextView: NSTextView {
+    var onFocusRequest: (() -> Void)?
     var onFocus: (() -> Void)?
     var onSubmit: (() -> Void)?
     var onImages: (([URL]) -> Void)?
     var onImagePaste: ((NSImage) -> Void)?
     var onResize: (() -> Void)?
     var didRequestFocus = false
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        // SwiftUI can request focus before a restored editor is attached to the window.
+        if window != nil { DispatchQueue.main.async { [weak self] in self?.onFocusRequest?() } }
+    }
 
     override func becomeFirstResponder() -> Bool {
         let result = super.becomeFirstResponder()

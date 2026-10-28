@@ -21,6 +21,9 @@ enum SelfCheck {
             }
             guard let editor = model.activeEditor else { fputs("UI FAIL: no active editor\n", stderr); exit(1) }
             let initialFrame = window.frame
+            let autosaveName = "XWriter-UI-\(UUID())"
+            window.setFrameAutosaveName(autosaveName)
+            window.saveFrame(usingName: autosaveName)
             require(model.avatar != nil, "profile photo loads")
             require(window.firstResponder === editor, "editor receives initial focus")
             require(editor.bounds.width > 400, "editor has usable width")
@@ -40,7 +43,19 @@ enum SelfCheck {
             require(model.drafts.first?.posts[0].text == "Hello #native", "opening the drawer saves current text")
             editor.insertText(" with drawer", replacementRange: NSRange(location: NSNotFound, length: 0))
             require(model.draft.posts[0].text == "Hello #native with drawer", "composer remains editable with drawer open")
+            window.setFrameOrigin(NSPoint(x: window.frame.minX - 20, y: window.frame.minY + 10))
+            await settle()
+            let movedOrigin = window.frame.origin
+            var closingOrigins: [NSPoint] = []
+            let moveObserver = NotificationCenter.default.addObserver(forName: NSWindow.didMoveNotification, object: window, queue: .main) { _ in
+                MainActor.assumeIsolated { closingOrigins.append(window.frame.origin) }
+            }
             await clickHeader(at: initialFrame.width - 25)
+            NotificationCenter.default.removeObserver(moveObserver)
+            closingOrigins.append(window.frame.origin)
+            window.setFrameAutosaveName("")
+            NSWindow.removeFrame(usingName: autosaveName)
+            require(closingOrigins.allSatisfy { $0 == movedOrigin }, "closing drawer never moves a repositioned autosaved window")
             require(!model.showDrafts, "same icon closes the drawer")
             require(abs(window.frame.width - initialFrame.width) < 1, "closing restores the composer width")
             require(window.firstResponder === editor, "closing the drawer returns focus to the editor")
@@ -50,7 +65,8 @@ enum SelfCheck {
             require(window.frame.height > initialFrame.height + 100, "window expands with text")
             require(abs(window.frame.width - initialFrame.width) < 1, "automatic growth preserves width")
 
-            editor.insertText(String(repeating: "\nA line of text", count: 80), replacementRange: NSRange(location: NSNotFound, length: 0))
+            editor.insertText(String(repeating: "\nA line of text that wraps across the composer and keeps the scrollbar visible while the drawer opens and closes.", count: 80),
+                              replacementRange: NSRange(location: NSNotFound, length: 0))
             await settle()
             require(window.frame.height <= ComposerWindowSizing.maximumHeight + 1, "window growth is capped")
             require(editor.bounds.height > window.frame.height, "long text scrolls within the capped window")
@@ -63,6 +79,41 @@ enum SelfCheck {
                 let caret = layout.boundingRect(forGlyphRange: glyphs, in: container).offsetBy(dx: 0, dy: editor.textContainerInset.height)
                 require(editor.visibleRect.intersects(caret), "caret remains visible after reaching the height cap")
             }
+            model.toggleDrafts()
+            await settle()
+            guard let scroll = editor.enclosingScrollView else {
+                fputs("UI FAIL: no composer scroll view\n", stderr); exit(1)
+            }
+            let clip = scroll.contentView
+            clip.scroll(to: NSPoint(x: 0, y: 300))
+            scroll.reflectScrolledClipView(clip)
+            await settle()
+            let viewport = scroll.convert(scroll.bounds, to: window.contentView)
+            let offset = clip.bounds.origin
+            var viewports: [NSRect] = []
+            var offsets: [NSPoint] = []
+            let postedFrames = scroll.postsFrameChangedNotifications
+            let postedBounds = clip.postsBoundsChangedNotifications
+            scroll.postsFrameChangedNotifications = true
+            clip.postsBoundsChangedNotifications = true
+            let frameObserver = NotificationCenter.default.addObserver(forName: NSView.frameDidChangeNotification, object: scroll, queue: .main) { _ in
+                MainActor.assumeIsolated { viewports.append(scroll.convert(scroll.bounds, to: window.contentView)) }
+            }
+            let scrollObserver = NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification, object: clip, queue: .main) { _ in
+                MainActor.assumeIsolated { offsets.append(clip.bounds.origin) }
+            }
+            await clickHeader(at: initialFrame.width - 25)
+            NotificationCenter.default.removeObserver(frameObserver)
+            NotificationCenter.default.removeObserver(scrollObserver)
+            scroll.postsFrameChangedNotifications = postedFrames
+            clip.postsBoundsChangedNotifications = postedBounds
+            viewports.append(scroll.convert(scroll.bounds, to: window.contentView))
+            offsets.append(clip.bounds.origin)
+            require(viewports.allSatisfy { abs($0.minX - viewport.minX) < 1 && abs($0.minY - viewport.minY) < 1 &&
+                abs($0.width - viewport.width) < 1 && abs($0.height - viewport.height) < 1 },
+                    "closing drawer never changes the composer viewport size or position")
+            require(offsets.allSatisfy { abs($0.x - offset.x) < 1 && abs($0.y - offset.y) < 1 },
+                    "closing drawer never changes scroll position")
             editor.selectAll(nil)
             editor.insertText("First post", replacementRange: editor.selectedRange())
             await settle()
@@ -78,6 +129,7 @@ enum SelfCheck {
             window.setContentSize(NSSize(width: 560, height: 300))
             await settle()
             require(model.activeEditor === editor, "focus returns after removing a post")
+            require(abs(editor.bounds.width - (editorWidth + 560 - initialFrame.width)) < 1, "manual resizing still updates the editor width")
             let draftsShortcut = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
                                                   timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
                                                   context: nil, characters: "d", charactersIgnoringModifiers: "d", isARepeat: false, keyCode: 2)!
@@ -170,6 +222,9 @@ enum SelfCheck {
         check(constrainedScreen.contains(constrainedDrawer), "drawer fits the available screen width on another display")
         let closedDrawer = ComposerWindowSizing.frame(current: constrainedDrawer, composerWidth: wideFrame.width, showingDrafts: false, screen: constrainedScreen)
         check(closedDrawer.width == wideFrame.width && closedDrawer.height == wideFrame.height, "closing restores width after screen-constrained expansion")
+        let movedDrawer = drawerFrame.offsetBy(dx: -150, dy: -30)
+        let closedMovedDrawer = ComposerWindowSizing.frame(current: movedDrawer, composerWidth: frame.width, showingDrafts: false, screen: screen)
+        check(closedMovedDrawer.origin == movedDrawer.origin, "closing preserves a moved window's origin even when partly offscreen")
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("XWriter-check-\(UUID())")
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = DraftStorage(directory: directory)
