@@ -109,29 +109,70 @@ struct PromptToolbar: View {
             ScrollView(.horizontal) {
                 HStack(spacing: 0) {
                     ForEach(settings.buttons) { button in
-                        let selected = controller.activeButtonID == button.id
-                        Button { toggle(button) } label: {
-                            ZStack {
-                                Image(systemName: button.icon.rawValue)
-                                    .font(.system(size: 19)).opacity(selected && controller.isLoading ? 0 : 1)
-                                if selected && controller.isLoading {
-                                    ProgressView().controlSize(.small).scaleEffect(0.8)
-                                }
-                            }.frame(width: 20, height: 20)
+                        PromptToolbarButton(button: button, selected: controller.activeButtonID == button.id,
+                                            state: controller.state) {
+                            toggle(button)
                         }
-                        .foregroundStyle(Theme.blue.opacity(button.isConfigured ? 1 : 0.4))
-                        .buttonStyle(RoundButtonStyle(blue: true)).focusable(false)
-                        .background(Theme.blue.opacity(selected ? 0.16 : 0), in: Circle())
-                        .disabled(!button.isConfigured)
-                        .accessibilityLabel(button.name).accessibilityValue(selected ? (controller.isLoading ? "Loading" : "On") : "Off")
-                        .accessibilityIdentifier("prompt-button-\(button.id)")
-                        .help(!button.isConfigured ? "Set a name and prompt in Settings" :
-                                selected && controller.state == .signingIn ? "Sign in to Claude in your browser; click to cancel" :
-                                selected && controller.isLoading ? "\(button.name) — analyzing; click to cancel" :
-                                selected ? "\(button.name) — click to turn off" : button.name)
                     }
+                }.padding(.vertical, 8)
+            }.scrollIndicators(.hidden).frame(height: 50)
+        }
+    }
+}
+
+private struct PromptToolbarButton: View {
+    let button: PromptButton
+    let selected: Bool
+    let state: HighlightController.State
+    let action: () -> Void
+    @ViewState<Bool> private var hovering = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var loading: Bool { selected && (state == .loading || state == .signingIn) }
+    private var help: String {
+        guard button.isConfigured else { return "Set a name and prompt in Settings" }
+        guard selected else { return button.name }
+        if state == .signingIn { return "Sign in to Claude in your browser; click to cancel" }
+        if loading { return "\(button.name) — analyzing; click to cancel" }
+        return "\(button.name) — click to turn off"
+    }
+
+    var body: some View {
+        Button(action: action) {
+            Group {
+                if loading && !reduceMotion {
+                    BouncingPromptIcon(symbol: button.icon.rawValue)
+                } else {
+                    Image(systemName: button.icon.rawValue)
                 }
-            }.scrollIndicators(.hidden).frame(height: 34)
+            }
+                .font(.system(size: 19))
+                .transaction { $0.animation = nil }
+                .foregroundStyle(selected ? Theme.toolbarActive : (hovering ? Theme.toolbarIconHover : Theme.toolbarIcon))
+                .opacity(button.isConfigured ? 1 : 0.4)
+                .frame(width: 34, height: 34)
+                .background(Theme.toolbarHover.opacity(hovering && button.isConfigured ? 1 : 0), in: Circle())
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain).focusable(false)
+        .onHover { hovering = $0 }
+        .disabled(!button.isConfigured)
+        .accessibilityLabel(button.name).accessibilityValue(selected ? (loading ? "Loading" : "On") : "Off")
+        .accessibilityIdentifier("prompt-button-\(button.id)")
+        .help(help)
+    }
+}
+
+private struct BouncingPromptIcon: View {
+    let symbol: String
+    @ViewState<Date> private var started = .now
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 60)) { timeline in
+            let phase = max(0, timeline.date.timeIntervalSince(started)).truncatingRemainder(dividingBy: 1)
+            let progress = min(phase / 0.65, 1)
+            let height = 8 * 4 * progress * (1 - progress)
+            Image(systemName: symbol).offset(y: -height)
         }
     }
 }

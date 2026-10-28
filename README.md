@@ -48,7 +48,7 @@ If macOS intercepts **⌃Space** to switch input sources, change or disable that
 
 Open **Settings (⌘,)** to add or remove toolbar buttons, edit their names and prompts, and choose from 40 monochrome SF Symbols. Drag rows to reorder them. Two editable examples are included: **Latin words** (leaf) and **Removable wording** (scissors). Settings save automatically across restarts. New buttons stay disabled until they have a name and prompt; an empty toolbar offers an “Add buttons…” link.
 
-Write a natural-language rule describing what to highlight; no output-format instructions are needed. Clicking a button sends its prompt and the **entire active post** to the composer's selected Claude model through the same isolated CLI and subscription sign-in as synonyms. The button stays pressed while running and after highlighting matching text. Click it again to hide the highlights. Selecting another button cancels any pending request, clears the previous highlights, and runs the new prompt. Only one highlighting button is active at a time. Long toolbars scroll horizontally.
+Write a natural-language rule describing what to highlight; no output-format instructions are needed. Clicking a button sends its prompt and the **entire active post** to the composer's selected Claude model through the same isolated CLI and subscription sign-in as synonyms. Idle icons are gray, with a gray circular background on hover. The active icon turns blue and bounces while waiting for Claude, then rests when the results arrive. Reduce Motion disables the bounce. Click it again to hide the highlights. Selecting another button cancels any pending request, clears the previous highlights, and runs the new prompt. Only one highlighting button is active at a time. Long toolbars scroll horizontally.
 
 Editing never reruns a prompt. Inserting within a highlighted span or at either edge clears that span; deleting or replacing text clears intersected spans. All other intervals shift with the edit, including native undo/redo and edits made while Claude is still responding. Invalidated spans do not reappear on undo. The button stays pressed even if no highlights remain; toggle it off and on to analyze the new text. Cursor movement, app switching, the drafts drawer, and Settings leave highlights intact. Switching posts/drafts, removing the active button, or editing its prompt clears its results.
 
@@ -90,6 +90,7 @@ To render isolated previews without modifying your drafts:
 ./XWriter.app/Contents/MacOS/XWriter --snapshot /tmp/xwriter-drafts.png --demo --drafts
 ./XWriter.app/Contents/MacOS/XWriter --snapshot /tmp/xwriter-synonyms.png --synonyms
 ./XWriter.app/Contents/MacOS/XWriter --snapshot /tmp/xwriter-highlights.png --highlights
+./XWriter.app/Contents/MacOS/XWriter --snapshot /tmp/xwriter-loading.png --highlights --loading
 ./XWriter.app/Contents/MacOS/XWriter --snapshot /tmp/xwriter-settings.png --settings
 ```
 

@@ -26,6 +26,10 @@ enum Theme {
     static let secondary = Color(nsColor: secondaryNS)
     static let border = Color(nsColor: borderNS)
     static let hover = Color(nsColor: adaptive(0xeff3f4, 0x181818))
+    static let toolbarIcon = Color(nsColor: adaptive(0x8799a9, 0x9ba9b5))
+    static let toolbarIconHover = Color(nsColor: adaptive(0x65737f, 0xb7c4ce))
+    static let toolbarHover = Color(nsColor: adaptive(0xe6e6e6, 0x262b30))
+    static let toolbarActive = Color(red: 74/255, green: 153/255, blue: 233/255)
     static let danger = Color(red: 244/255, green: 33/255, blue: 46/255)
 
     private static func adaptive(_ light: UInt32, _ dark: UInt32) -> NSColor {

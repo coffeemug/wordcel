@@ -69,6 +69,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let isolatedDirectory = isTesting ? FileManager.default.temporaryDirectory.appendingPathComponent("XWriter-preview-\(UUID())") : nil
         let previewSynonyms = isTesting ? SelfCheck.SynonymStub() : nil
         let previewHighlights = isTesting ? SelfCheck.HighlightStub() : nil
+        if isTesting && CommandLine.arguments.contains("--loading") { previewHighlights?.delay = .seconds(10) }
         let preferences = isolatedDirectory.map { SelfCheck.preferences(for: $0) } ?? .standard
         model = ComposerModel(directory: isolatedDirectory, synonymService: previewSynonyms,
                               highlightService: previewHighlights, preferences: preferences)

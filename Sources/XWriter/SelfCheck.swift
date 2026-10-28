@@ -96,7 +96,8 @@ enum SelfCheck {
                                                     context: nil, characters: "o", charactersIgnoringModifiers: "o", isARepeat: false, keyCode: 31)!
             require(NSApp.mainMenu?.performKeyEquivalent(with: oldPhotoShortcut) != true, "photo import has no menu shortcut")
             editor.insertText("Hello #native", replacementRange: NSRange(location: NSNotFound, length: 0))
-            require(model.draft.posts[0].text == "Hello #native", "native typing updates the model")
+            require(model.draft.posts[0].text == "Hello #native",
+                    "native typing updates the model (model=\(model.draft.posts[0].text.debugDescription), editor=\(editor.string.debugDescription), active=\(model.activeEditor === editor), attached=\(editor.window === window))")
             editor.breakUndoCoalescing()
             editor.undoManager?.undo()
             require(model.draft.posts[0].text.isEmpty, "native undo")
@@ -554,6 +555,24 @@ enum SelfCheck {
     @MainActor private static func highlightInterface(model: ComposerModel, window: NSWindow, service: HighlightStub,
                                                       check: (Bool, String) -> Void) async {
         func settle() async { try? await Task.sleep(for: .milliseconds(350)) }
+        func firstIconBounds() -> NSRect? {
+            guard let view = window.contentView else { return nil }
+            let rect = view.convert(NSRect(x: 60, y: 4, width: 34, height: 50), from: nil)
+            guard let bitmap = view.bitmapImageRepForCachingDisplay(in: rect) else { return nil }
+            view.cacheDisplay(in: rect, to: bitmap)
+            var minX = bitmap.pixelsWide, minY = bitmap.pixelsHigh, maxX = -1, maxY = -1
+            for y in 0..<bitmap.pixelsHigh {
+                for x in 0..<bitmap.pixelsWide {
+                    guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB),
+                          color.blueComponent - color.redComponent > 0.25,
+                          color.blueComponent - color.greenComponent > 0.1 else { continue }
+                    minX = min(minX, x); maxX = max(maxX, x)
+                    minY = min(minY, y); maxY = max(maxY, y)
+                }
+            }
+            guard maxX >= minX, maxY >= minY else { return nil }
+            return NSRect(x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1)
+        }
         @MainActor func click(_ point: NSPoint, in target: NSWindow? = nil) async {
             let target = target ?? window
             for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
@@ -584,6 +603,7 @@ enum SelfCheck {
         await click(first)
         check(model.highlights.state == .ready && model.highlights.activeButtonID == buttons[0].id && model.highlights.ranges.count == 3,
               "clicking a configured button highlights the post and stays pressed")
+        guard let restingIcon = firstIconBounds() else { check(false, "active toolbar icon is visible"); return }
         check(service.texts == [source] && service.prompts == [buttons[0].prompt] &&
               service.models == [model.synonymModel] && service.efforts == [model.synonymEffort],
               "highlight request uses the whole post, configured prompt, and current model/effort")
@@ -617,15 +637,31 @@ enum SelfCheck {
         check(model.highlights.activeButtonID == buttons[1].id && model.highlights.ranges.count == 3, "another button replaces the active highlight mode")
         await click(second)
         check(model.highlights.state == .idle && editor.highlightRanges.isEmpty && service.texts.count == 2, "unpressing hides highlights without another request")
-        service.delay = .milliseconds(600)
+        service.delay = .seconds(1)
         await click(first)
         check(model.highlights.isLoading, "a pending button remains pressed")
         editor.insertText("x", replacementRange: NSRange(location: precise.location + 2, length: 0))
+        var bouncingFrames: [NSRect] = []
+        for _ in 0..<6 {
+            if let bounds = firstIconBounds() { bouncingFrames.append(bounds) }
+            try? await Task.sleep(for: .milliseconds(75))
+        }
+        check(bouncingFrames.count == 6 &&
+              bouncingFrames.allSatisfy { abs($0.minX - restingIcon.minX) <= 1 &&
+                  abs($0.width - restingIcon.width) <= 1 && abs($0.height - restingIcon.height) <= 2 },
+              "loading preserves the icon's size and horizontal position")
+        let heights = bouncingFrames.map(\.minY)
+        check(NSWorkspace.shared.accessibilityDisplayShouldReduceMotion || (heights.max()! - heights.min()! > 3),
+              "the loading icon moves vertically rather than zooming")
         await settle()
         check(model.highlights.ranges.count == 2 && model.highlights.ranges[0] == (editor.string as NSString).range(of: "clear") && service.texts.count == 3,
               "edits during a request transform returned intervals without a second call")
+        check(model.highlights.state == .ready && firstIconBounds() == restingIcon, "the completed icon returns to its resting position")
+        await settle()
+        check(firstIconBounds() == restingIcon, "the completed icon stays still")
         await click(first)
         editor.insertText(source, replacementRange: NSRange(location: 0, length: (editor.string as NSString).length))
+        service.delay = .milliseconds(600)
         service.ignoreCancellation = true
         await click(first)
         await click(second)
