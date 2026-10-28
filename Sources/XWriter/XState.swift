@@ -92,7 +92,13 @@ struct DraftStorage {
 
 @MainActor
 final class ComposerModel: ObservableObject {
-    @Published var draft: Draft { didSet { synonyms.dismiss(); queueSave() } }
+    @Published var draft: Draft {
+        didSet {
+            if draft.id != oldValue.id { synonyms.dismiss() }
+            else { synonyms.invalidateIfChanged(text: draft.posts.first { $0.id == activePostID }?.text) }
+            queueSave()
+        }
+    }
     @Published var drafts: [Draft]
     @Published var activePostID: UUID { didSet { if activePostID != oldValue { synonyms.dismiss() } } }
     @Published var composerWidth: CGFloat = 600

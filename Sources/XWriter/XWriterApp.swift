@@ -58,7 +58,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var composerWidthBeforeDrawer: CGFloat?
     private var frameAutosaveNameBeforeDrawer: NSWindow.FrameAutosaveName?
     private var isResizingDraftsDrawer = false
-    private var interactionMonitor: Any?
+    private var escapeMonitor: Any?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if let index = CommandLine.arguments.firstIndex(of: "--snapshot"), CommandLine.arguments.count > index + 1 {
@@ -108,17 +108,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.center()
         if !isTesting { window.setFrameAutosaveName("XWriterComposer") }
         window.makeKeyAndOrderFront(nil)
-        interactionMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel]) { [weak self] event in
-            guard let self, event.window === self.window else { return event }
-            let modifiers = event.modifierFlags.intersection([.control, .command, .option, .shift])
-            if event.type == .keyDown && modifiers == .control && event.keyCode == 49 { return event }
-            // Leave the suggestion rows available for clicking and horizontal scrolling.
-            if event.locationInWindow.y < 58 && event.locationInWindow.x < self.model.composerWidth,
-               case .ready = self.model.synonyms.state {
-                if event.type == .leftMouseDown || event.type == .scrollWheel { return event }
-            }
+        escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self, event.window === self.window, event.keyCode == 53,
+                  self.model.synonyms.state != .idle else { return event }
             self.model.synonyms.dismiss()
-            return event
+            return nil
         }
         NSApp.activate(ignoringOtherApps: true)
         if isTesting && CommandLine.arguments.contains("--drafts") { model.toggleDrafts() }
@@ -209,10 +203,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         scheduleResize(to: contentHeight)
     }
     func windowDidChangeScreen(_ notification: Notification) { scheduleResize(to: contentHeight) }
-    func windowDidResignKey(_ notification: Notification) { model.synonyms.lostFocus() }
-    func windowWillMove(_ notification: Notification) { model.synonyms.dismiss() }
-    func windowWillStartLiveResize(_ notification: Notification) { model.synonyms.dismiss() }
-
     func windowShouldClose(_ sender: NSWindow) -> Bool { model.synonyms.dismiss(); return model.save() }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         model?.synonyms.dismiss()
@@ -225,7 +215,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return alert.runModal() == .alertSecondButtonReturn ? .terminateNow : .terminateCancel
     }
     func applicationWillTerminate(_ notification: Notification) {
-        if let interactionMonitor { NSEvent.removeMonitor(interactionMonitor) }
+        if let escapeMonitor { NSEvent.removeMonitor(escapeMonitor) }
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         window.makeKeyAndOrderFront(nil)

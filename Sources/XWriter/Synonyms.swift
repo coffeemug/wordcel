@@ -21,7 +21,6 @@ struct SynonymLists: Codable, Equatable {
 
 struct SynonymTarget {
     let text: String
-    let selection: NSRange
     let range: NSRange
     var word: String { (text as NSString).substring(with: range) }
 
@@ -35,11 +34,16 @@ struct SynonymTarget {
         let range = words.first { $0.location <= selection.location && selection.location < NSMaxRange($0) && NSMaxRange(selection) <= NSMaxRange($0) }
             ?? words.first { selection.length == 0 && NSMaxRange($0) == selection.location }
         guard let range, range.length <= 100 else { return nil }
-        return SynonymTarget(text: text, selection: selection, range: range)
+        return SynonymTarget(text: text, range: range)
+    }
+
+    func matches(text: String, selection: NSRange) -> Bool {
+        guard let current = Self.capture(text: text, selection: selection) else { return false }
+        return current.range == range && current.word == word
     }
 
     @MainActor func matches(_ editor: ComposerTextView) -> Bool {
-        editor.window != nil && editor.string == text && editor.selectedRange() == selection
+        editor.window != nil && matches(text: editor.string, selection: editor.selectedRange())
     }
 
     func replacement(_ synonym: String) -> String {
@@ -102,7 +106,7 @@ final class SynonymController: ObservableObject {
                 state = .ready(lists)
                 task = nil
             } catch is CancellationError {
-                // A newer request or an editor interaction already restored the toolbar.
+                // A newer request or dismissal already restored the toolbar.
             } catch {
                 guard requestID == id else { return }
                 dismiss()
@@ -126,11 +130,16 @@ final class SynonymController: ObservableObject {
     }
 
     func invalidateIfChanged(in editor: ComposerTextView) {
-        if let target, self.editor !== editor || !target.matches(editor) { dismiss() }
+        guard self.editor === editor else { return }
+        invalidateIfChanged(text: editor.string)
     }
 
-    func lostFocus() {
-        if state != .signingIn { dismiss() }
+    func invalidateIfChanged(text: String?) {
+        guard let target else { return }
+        guard let text, let editor, target.matches(text: text, selection: editor.selectedRange()) else {
+            dismiss()
+            return
+        }
     }
 
     func dismiss() {

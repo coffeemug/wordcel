@@ -227,6 +227,18 @@ enum SelfCheck {
         let helpRange = (targetText as NSString).range(of: "Help")
         let target = SynonymTarget.capture(text: targetText, selection: NSRange(location: helpRange.location + 2, length: 0))
         check(target?.word == "Help" && target?.range == helpRange, "synonyms target the word under a UTF-16 cursor")
+        check(target?.matches(text: targetText, selection: NSRange(location: helpRange.location, length: 0)) == true &&
+              target?.matches(text: targetText, selection: NSRange(location: NSMaxRange(helpRange), length: 0)) == true &&
+              target?.matches(text: targetText, selection: helpRange) == true,
+              "synonyms survive cursor movement and selection within the target word")
+        check(target?.matches(text: "😀 Help, someone.", selection: helpRange) == true,
+              "changes outside the target word do not invalidate synonyms")
+        check(target?.matches(text: "😀 Yelp, help.", selection: helpRange) == false,
+              "changing the target word invalidates synonyms even at the same range")
+        check(target?.matches(text: "😀 Help, Help.", selection: NSRange(location: 10, length: 0)) == false &&
+              target?.matches(text: targetText, selection: NSRange(location: 8, length: 0)) == false &&
+              target?.matches(text: targetText, selection: NSRange(location: helpRange.location, length: 8)) == false,
+              "another occurrence, whitespace, or a selection beyond the word invalidates synonyms")
         check(target?.replacement("assist") == "Assist", "synonym replacement preserves capitalization")
         check(SynonymTarget.capture(text: "HELP", selection: NSRange(location: 4, length: 0))?.replacement("assist") == "ASSIST",
               "synonyms support end-of-word cursors and uppercase")
@@ -338,9 +350,9 @@ enum SelfCheck {
                             timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil,
                             characters: characters, charactersIgnoringModifiers: characters, isARepeat: false, keyCode: code)!
         }
-        @MainActor func clickSynonym(y: CGFloat) async {
+        @MainActor func click(at location: NSPoint) async {
             for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
-                let event = NSEvent.mouseEvent(with: type, location: NSPoint(x: 132, y: y), modifierFlags: [],
+                let event = NSEvent.mouseEvent(with: type, location: location, modifierFlags: [],
                                               timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
                                               context: nil, eventNumber: 0, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0)!
                 NSApp.postEvent(event, atStart: false)
@@ -360,10 +372,39 @@ enum SelfCheck {
         check(editor.performKeyEquivalent(with: key(" ", code: 49)), "Control-Space is handled by the native editor")
         check(model.synonyms.state == .loading, "synonym lookup immediately shows loading")
         await settle()
-        check(model.synonyms.state == .ready(SynonymLists(latin: ["assist", "aid"], germanic: ["back", "bolster"])), "synonyms display both groups")
+        let ready = SynonymController.State.ready(SynonymLists(latin: ["assist", "aid"], germanic: ["back", "bolster"]))
+        check(model.synonyms.state == ready, "synonyms display both groups")
         check(service.words.last == "Help", "only the target word is sent to Claude")
         check(window.frame == frame, "synonym rows preserve the composer frame")
-        await clickSynonym(y: 40)
+
+        window.makeFirstResponder(nil)
+        check(model.synonyms.state == ready, "synonyms survive the editor losing focus")
+        window.makeFirstResponder(editor)
+        NSApp.hide(nil)
+        await settle()
+        check(NSApp.isHidden && !window.isKeyWindow && model.synonyms.state == ready, "synonyms survive switching away from the app")
+        NSApp.unhide(nil)
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        await settle()
+        check(window.isKeyWindow && model.synonyms.state == ready, "synonyms remain when returning to the app")
+
+        await click(at: NSPoint(x: model.composerWidth - 25, y: window.contentView!.bounds.height - 26))
+        check(model.showDrafts && model.synonyms.state == ready, "clicking the drawer icon preserves synonyms")
+        NSApp.postEvent(key("d", code: 2, modifiers: .command), atStart: false)
+        await settle()
+        check(!model.showDrafts && model.synonyms.state == ready, "Command-D closes the drawer without dismissing synonyms")
+        model.draft.modified = Date()
+        await settle()
+        check(model.synonyms.state == ready, "draft metadata changes preserve synonyms")
+
+        NSApp.postEvent(key("\u{f702}", code: 123, modifiers: []), atStart: false)
+        await settle()
+        check(editor.selectedRange().location == target.location + 1 && model.synonyms.state == ready,
+              "arrow keys within the word preserve synonyms")
+        editor.setSelectedRange(target)
+        check(model.synonyms.state == ready, "selecting only the target word preserves synonyms")
+        await click(at: NSPoint(x: 132, y: 40))
         check(editor.string == "😀 Assist, help." && model.draft.posts[0].text == editor.string, "replacement changes only the targeted occurrence")
         check(model.synonyms.state == .idle, "replacement restores the icons")
         editor.undoManager?.undo()
@@ -374,7 +415,7 @@ enum SelfCheck {
         editor.setSelectedRange(NSRange(location: (editor.string as NSString).range(of: "help").location + 1, length: 0))
         editor.keyDown(with: key(" ", code: 49))
         await settle()
-        await clickSynonym(y: 18)
+        await click(at: NSPoint(x: 132, y: 18))
         check(editor.string == "😀 Assist, back.", "clicking a Germanic synonym replaces the word")
         editor.setSelectedRange(NSRange(location: (editor.string as NSString).range(of: "back").location + 1, length: 0))
         editor.keyDown(with: key(" ", code: 49))
@@ -387,21 +428,44 @@ enum SelfCheck {
         editor.keyDown(with: key(" ", code: 49))
         try? await Task.sleep(for: .milliseconds(20))
         editor.setSelectedRange(NSRange(location: 6, length: 0))
-        check(model.synonyms.state == .idle, "cursor movement cancels a pending lookup")
+        check(model.synonyms.state == .loading, "movement inside the word preserves a pending lookup")
+        editor.setSelectedRange(NSRange(location: (editor.string as NSString).range(of: "bzack").location + 1, length: 0))
+        check(model.synonyms.state == .idle, "leaving the word cancels a pending lookup")
         await settle()
         check(model.synonyms.state == .idle, "late cancelled results cannot reappear")
+        editor.keyDown(with: key(" ", code: 49))
+        try? await Task.sleep(for: .milliseconds(20))
+        NSApp.postEvent(key("\u{1b}", code: 53, modifiers: []), atStart: false)
+        await settle()
+        check(model.synonyms.state == .idle, "Escape cancels pending lookups and suppresses late results")
         service.ignoreCancellation = false
 
         service.authenticated = false
         editor.keyDown(with: key(" ", code: 49))
         try? await Task.sleep(for: .milliseconds(20))
         check(model.synonyms.state == .signingIn, "first use starts Claude's sign-in flow")
-        model.synonyms.lostFocus()
+        window.makeFirstResponder(nil)
         check(model.synonyms.state == .signingIn, "browser sign-in can temporarily take focus")
         await settle()
-        check(service.signIns == 1 && model.synonyms.state != .idle, "lookup resumes after sign-in")
-        model.synonyms.lostFocus()
-        check(model.synonyms.state == .idle, "leaving the editor dismisses results")
+        check(service.signIns == 1 && model.synonyms.state == ready, "lookup completes after sign-in without editor focus")
+        window.makeFirstResponder(editor)
+        let selection = editor.selectedRange()
+        NSApp.postEvent(key("\u{1b}", code: 53, modifiers: []), atStart: false)
+        await settle()
+        check(model.synonyms.state == .idle && editor.selectedRange() == selection, "Escape dismisses results without moving the cursor")
+
+        editor.keyDown(with: key(" ", code: 49))
+        await settle()
+        editor.setSelectedRange(NSRange(location: 0, length: 0))
+        check(model.synonyms.state == .idle, "moving outside the word dismisses ready results")
+        editor.setSelectedRange(NSRange(location: 5, length: 0))
+        editor.keyDown(with: key(" ", code: 49))
+        await settle()
+        model.newDraft()
+        check(model.synonyms.state == .idle, "switching drafts dismisses results for the previous editor")
+        await settle()
+        guard let editor = model.activeEditor else { check(false, "new draft requires an editor"); return }
+        editor.insertText("help", replacementRange: NSRange(location: NSNotFound, length: 0))
 
         service.failure = ClaudeCLIError.failed("Synthetic Claude failure")
         editor.keyDown(with: key(" ", code: 49))
