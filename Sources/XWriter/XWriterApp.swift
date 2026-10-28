@@ -90,6 +90,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         if isTesting && CommandLine.arguments.contains("--highlights") {
             model.draft.posts[0].text = "😀 A precise line, a clear point, and precise words."
+            if CommandLine.arguments.contains("--wiggly") { model.toolbarSettings.buttons[0].style.underline = .wiggly }
+            if CommandLine.arguments.contains("--dotted") { model.toolbarSettings.buttons[0].style.underline = .dotted }
         }
         if CommandLine.arguments.contains("--dark") { NSApp.appearance = NSAppearance(named: .darkAqua) }
         else { model.applyAppearance() }
@@ -138,7 +140,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         if isTesting && CommandLine.arguments.contains("--highlights") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-                guard let self, let button = self.model.toolbarSettings.buttons.first else { return }
+                guard let self else { return }
+                let index = CommandLine.arguments.contains("--cuts") ? 1 : 0
+                guard self.model.toolbarSettings.buttons.indices.contains(index) else { return }
+                let button = self.model.toolbarSettings.buttons[index]
                 self.model.toggleHighlights(button)
             }
         }
@@ -322,12 +327,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc private func close() { NSApp.keyWindow?.performClose(nil) }
     @objc private func showSettings() {
         if settingsWindow == nil {
-            let settings = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 490),
+            let settings = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 680),
                                     styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
             settings.title = "Settings"
             settings.isReleasedWhenClosed = false
-            settings.minSize = NSSize(width: 660, height: 450)
-            settings.contentView = NSHostingView(rootView: ToolbarSettingsView(settings: model.toolbarSettings))
+            settings.contentMinSize = NSSize(width: 660, height: 450)
+            let hosting = NSHostingView(rootView: ToolbarSettingsView(settings: model.toolbarSettings))
+            hosting.sizingOptions = []
+            settings.contentView = hosting
             settings.center()
             settingsWindow = settings
         }

@@ -9,6 +9,7 @@ struct GrowingTextView: NSViewRepresentable {
 
     func makeNSView(context: Context) -> ComposerTextView {
         let view = ComposerTextView(frame: .zero)
+        view.textContainer?.replaceLayoutManager(HighlightLayoutManager())
         view.delegate = context.coordinator
         view.isRichText = false
         view.importsGraphics = false
@@ -147,13 +148,22 @@ final class ComposerTextView: NSTextView {
     var onResize: (() -> Void)?
     var didRequestFocus = false
     var highlightRanges: [NSRange] = []
+    var highlightStyle = HighlightStyle()
 
     func refreshHighlights() {
         guard let layoutManager else { return }
-        let fullRange = NSRange(location: 0, length: (string as NSString).length)
-        layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: fullRange)
+        let length = (string as NSString).length
+        var position = 0
+        while position < length {
+            var range = NSRange()
+            let attributes = layoutManager.temporaryAttributes(atCharacterIndex: position, effectiveRange: &range)
+            if attributes[HighlightStyle.marker] != nil {
+                for key in HighlightStyle.attributeKeys { layoutManager.removeTemporaryAttribute(key, forCharacterRange: range) }
+            }
+            position = NSMaxRange(range)
+        }
         for range in highlightRanges {
-            layoutManager.addTemporaryAttribute(.backgroundColor, value: NSColor.systemYellow.withAlphaComponent(0.3), forCharacterRange: range)
+            layoutManager.addTemporaryAttributes(highlightStyle.attributes, forCharacterRange: range)
         }
         needsDisplay = true
     }

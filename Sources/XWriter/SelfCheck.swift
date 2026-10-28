@@ -535,6 +535,35 @@ enum SelfCheck {
             defer { UserDefaults.standard.removePersistentDomain(forName: directory.lastPathComponent) }
             let settings = PromptToolbarSettings(preferences: defaults)
             check(settings.buttons.count == 2 && settings.buttons.allSatisfy(\.isConfigured), "toolbar starts with two editable examples")
+            var legacyButtons = settings.buttons
+            legacyButtons[0].name = "Roots"
+            legacyButtons.append(PromptButton(name: "Custom", icon: .fish, prompt: "Highlight concrete nouns."))
+            guard let objects = try JSONSerialization.jsonObject(with: JSONEncoder().encode(legacyButtons)) as? [[String: Any]] else {
+                throw CocoaError(.coderReadCorrupt)
+            }
+            let legacyData = try JSONSerialization.data(withJSONObject: objects.map { object in
+                var legacy = object
+                legacy.removeValue(forKey: "style")
+                return legacy
+            })
+            defaults.set(legacyData, forKey: PromptToolbarSettings.preferenceKey)
+            let migrated = PromptToolbarSettings(preferences: defaults)
+            check(migrated.buttons.map(\.id) == legacyButtons.map(\.id) && migrated.buttons[0].name == "Roots" &&
+                  migrated.buttons[0].style == .latin && migrated.buttons[1].style == .cuts &&
+                  migrated.buttons[2].style == HighlightStyle(), "legacy buttons preserve their identity and receive appropriate styles")
+            let savedObjects = try JSONSerialization.jsonObject(with: defaults.data(forKey: PromptToolbarSettings.preferenceKey)!) as? [[String: Any]]
+            check(savedObjects?.allSatisfy { $0["style"] != nil } == true, "migrated styles are persisted")
+            migrated.buttons[0].style = HighlightStyle(fontColor: .rgba(red: 0.2, green: 0.4, blue: 0.6, alpha: 0.8),
+                                                      strikethrough: true, underline: .wiggly, backgroundColor: .yellow)
+            let styled = PromptToolbarSettings(preferences: defaults)
+            check(styled.buttons == migrated.buttons, "all style choices and color opacity survive a restart without preset overrides")
+            let invalid = PromptButton(name: "Invalid color", prompt: "Highlight words.",
+                                       style: HighlightStyle(fontColor: .rgba(red: 2, green: 0, blue: 0, alpha: 1)))
+            let invalidData = try JSONEncoder().encode([invalid])
+            defaults.set(invalidData, forKey: PromptToolbarSettings.preferenceKey)
+            let protected = PromptToolbarSettings(preferences: defaults)
+            check(protected.isReadOnly && protected.error != nil && defaults.data(forKey: PromptToolbarSettings.preferenceKey) == invalidData,
+                  "invalid saved color components are reported without overwriting settings")
             settings.buttons.append(PromptButton(name: "Custom", icon: .fish, prompt: "Highlight concrete nouns."))
             settings.buttons[0].prompt = "Highlight verbs."
             settings.buttons.swapAt(0, 2)
@@ -608,9 +637,26 @@ enum SelfCheck {
               service.models == [model.synonymModel] && service.efforts == [model.synonymEffort],
               "highlight request uses the whole post, configured prompt, and current model/effort")
         let precise = (source as NSString).range(of: "precise")
-        check(editor.layoutManager?.temporaryAttribute(.backgroundColor, atCharacterIndex: precise.location, effectiveRange: nil) != nil &&
-              editor.textStorage?.attribute(.backgroundColor, at: precise.location, effectiveRange: nil) == nil,
-              "highlights are temporary visual attributes, not document formatting")
+        let layout = editor.layoutManager!
+        check(layout.temporaryAttribute(.underlineStyle, atCharacterIndex: precise.location, effectiveRange: nil) as? Int == NSUnderlineStyle.single.rawValue &&
+              layout.temporaryAttribute(.underlineColor, atCharacterIndex: precise.location, effectiveRange: nil) as? NSColor == HighlightColor.underlineBlue.nsColor &&
+              layout.temporaryAttribute(.foregroundColor, atCharacterIndex: precise.location, effectiveRange: nil) == nil &&
+              layout.temporaryAttribute(.backgroundColor, atCharacterIndex: precise.location, effectiveRange: nil) == nil &&
+              editor.textStorage?.attribute(.underlineStyle, at: precise.location, effectiveRange: nil) == nil,
+              "Latin styling uses only a blue temporary underline without changing text or background")
+        layout.addTemporaryAttribute(.underlineStyle, value: NSUnderlineStyle.double.rawValue, forCharacterRange: NSRange(location: 0, length: 2))
+        model.toolbarSettings.buttons[0].style = HighlightStyle(fontColor: .iconGray, strikethrough: true, underline: .dotted)
+        check(layout.temporaryAttribute(.foregroundColor, atCharacterIndex: precise.location, effectiveRange: nil) as? NSColor == Theme.toolbarIconNS &&
+              layout.temporaryAttribute(.backgroundColor, atCharacterIndex: precise.location, effectiveRange: nil) != nil &&
+              layout.temporaryAttribute(.underlineStyle, atCharacterIndex: precise.location, effectiveRange: nil) as? Int == NSUnderlineStyle.single.union(.patternDot).rawValue &&
+              service.texts.count == 1 && model.highlights.activeButtonID == buttons[0].id, "style changes update current highlights without rerunning or unpressing")
+        model.toolbarSettings.buttons[0].style = .latin
+        check(layout.temporaryAttribute(.foregroundColor, atCharacterIndex: precise.location, effectiveRange: nil) == nil &&
+              layout.temporaryAttribute(.strikethroughStyle, atCharacterIndex: precise.location, effectiveRange: nil) == nil &&
+              layout.temporaryAttribute(.backgroundColor, atCharacterIndex: precise.location, effectiveRange: nil) == nil &&
+              layout.temporaryAttribute(.underlineStyle, atCharacterIndex: 0, effectiveRange: nil) as? Int == NSUnderlineStyle.double.rawValue,
+              "changing styles clears only our previous decorations and preserves unrelated temporary attributes")
+        layout.removeTemporaryAttribute(.underlineStyle, forCharacterRange: NSRange(location: 0, length: 2))
         editor.setSelectedRange(NSRange(location: 0, length: 0))
         model.toggleDrafts()
         model.toggleDrafts()
@@ -635,12 +681,22 @@ enum SelfCheck {
         editor.insertText(source, replacementRange: NSRange(location: 0, length: (editor.string as NSString).length))
         await click(second)
         check(model.highlights.activeButtonID == buttons[1].id && model.highlights.ranges.count == 3, "another button replaces the active highlight mode")
+        check(layout.temporaryAttribute(.foregroundColor, atCharacterIndex: precise.location, effectiveRange: nil) as? NSColor == Theme.toolbarIconNS &&
+              layout.temporaryAttribute(.strikethroughStyle, atCharacterIndex: precise.location, effectiveRange: nil) as? Int == NSUnderlineStyle.single.rawValue &&
+              layout.temporaryAttribute(.underlineStyle, atCharacterIndex: precise.location, effectiveRange: nil) == nil &&
+              layout.temporaryAttribute(.backgroundColor, atCharacterIndex: precise.location, effectiveRange: nil) == nil &&
+              editor.textStorage?.attribute(.strikethroughStyle, at: precise.location, effectiveRange: nil) == nil,
+              "removable wording uses icon-gray text and solid strikethrough only")
         await click(second)
         check(model.highlights.state == .idle && editor.highlightRanges.isEmpty && service.texts.count == 2, "unpressing hides highlights without another request")
+        check(layout.temporaryAttribute(.foregroundColor, atCharacterIndex: precise.location, effectiveRange: nil) == nil &&
+              layout.temporaryAttribute(.strikethroughStyle, atCharacterIndex: precise.location, effectiveRange: nil) == nil,
+              "unpressing restores normal text color and removes strikethrough")
         service.delay = .seconds(1)
         await click(first)
         check(model.highlights.isLoading, "a pending button remains pressed")
         editor.insertText("x", replacementRange: NSRange(location: precise.location + 2, length: 0))
+        model.toolbarSettings.buttons[0].style.underline = .wiggly
         var bouncingFrames: [NSRect] = []
         for _ in 0..<6 {
             if let bounds = firstIconBounds() { bouncingFrames.append(bounds) }
@@ -656,6 +712,9 @@ enum SelfCheck {
         await settle()
         check(model.highlights.ranges.count == 2 && model.highlights.ranges[0] == (editor.string as NSString).range(of: "clear") && service.texts.count == 3,
               "edits during a request transform returned intervals without a second call")
+        check(layout.temporaryAttribute(HighlightStyle.wigglyUnderline, atCharacterIndex: model.highlights.ranges[0].location, effectiveRange: nil) as? Bool == true,
+              "pending results use the latest style rather than the style at request start")
+        model.toolbarSettings.buttons[0].style = .latin
         check(model.highlights.state == .ready && firstIconBounds() == restingIcon, "the completed icon returns to its resting position")
         await settle()
         check(firstIconBounds() == restingIcon, "the completed icon stays still")
@@ -686,7 +745,7 @@ enum SelfCheck {
             field.selectAll(nil)
             field.insertText("Custom highlight", replacementRange: field.selectedRange())
         } else { check(false, "Settings name field accepts native editing") }
-        await click(NSPoint(x: 330, y: 260), in: settings)
+        await click(NSPoint(x: 330, y: settings.contentView!.bounds.height - 200), in: settings)
         if let field = settings.firstResponder as? NSTextView {
             field.insertText("Highlight concrete nouns.", replacementRange: NSRange(location: 0, length: (field.string as NSString).length))
         } else { check(false, "Settings prompt accepts native editing") }
@@ -737,6 +796,65 @@ enum SelfCheck {
         model.newDraft()
         await settle()
         check(model.highlights.state == .idle, "switching drafts clears document-specific highlights")
+        highlightStyleRenderingChecks(check: check)
+    }
+
+    @MainActor private static func highlightStyleRenderingChecks(check: (Bool, String) -> Void) {
+        let view = ComposerTextView(frame: NSRect(x: 0, y: 0, width: 220, height: 150))
+        view.textContainer?.replaceLayoutManager(HighlightLayoutManager())
+        view.isEditable = false
+        view.drawsBackground = false
+        view.font = .systemFont(ofSize: 20)
+        view.textColor = .black
+        view.string = "Careful wording wraps across several lines with accents e\u{301} and emoji 😀."
+        view.highlightRanges = [NSRange(location: 0, length: (view.string as NSString).length)]
+        func bluePixels(_ style: HighlightUnderline) -> [(x: Int, y: Int)] {
+            view.highlightStyle = HighlightStyle(underline: style, backgroundColor: nil)
+            view.refreshHighlights()
+            guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { check(false, "style bitmap is available"); return [] }
+            view.cacheDisplay(in: view.bounds, to: bitmap)
+            var pixels: [(x: Int, y: Int)] = []
+            for y in 0..<bitmap.pixelsHigh {
+                for x in 0..<bitmap.pixelsWide {
+                    guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB),
+                          color.alphaComponent > 0.5, color.blueComponent - color.redComponent > 0.3,
+                          color.blueComponent - color.greenComponent > 0.15 else { continue }
+                    pixels.append((x, y))
+                }
+            }
+            return pixels
+        }
+        let solid = bluePixels(.solid)
+        let dotted = bluePixels(.dotted)
+        let wiggly = bluePixels(.wiggly)
+        check(!solid.isEmpty && dotted.count < solid.count,
+              "dotted underlines render separate dots instead of a solid stroke")
+        let dottedRows = Set(dotted.map(\.y)).sorted()
+        if let top = dottedRows.first {
+            var bottom = top
+            for row in dottedRows.dropFirst() {
+                guard row == bottom + 1 else { break }
+                bottom = row
+            }
+            let columns = Set(dotted.filter { $0.y <= bottom }.map(\.x)).sorted()
+            if let left = columns.first {
+                var right = left
+                for column in columns.dropFirst() {
+                    guard column == right + 1 else { break }
+                    right = column
+                }
+                check(abs((right - left) - (bottom - top)) <= 1, "dotted underlines use round dots rather than short dashes")
+            } else { check(false, "dotted underline has visible dots") }
+        } else { check(false, "dotted underline has visible dots") }
+        let wigglyRows = Set(wiggly.map(\.y))
+        check(wigglyRows.count > Set(solid.map(\.y)).count, "wiggly underlines visibly oscillate rather than drawing a straight line")
+        var lineCount = 0
+        view.layoutManager!.enumerateLineFragments(forGlyphRange: NSRange(location: 0, length: view.layoutManager!.numberOfGlyphs)) { _, _, _, _, _ in lineCount += 1 }
+        let rows = wigglyRows.sorted()
+        let groups = rows.isEmpty ? 0 : 1 + zip(rows, rows.dropFirst()).filter { $1 - $0 > 2 }.count
+        check(lineCount > 1 && groups == lineCount, "wiggly underlines follow every wrapped line, including Unicode")
+        view.highlightRanges = []
+        check(bluePixels(.wiggly).isEmpty, "clearing highlights removes custom wiggly rendering")
     }
 
     @MainActor private static func synonymInterface(model: ComposerModel, window: NSWindow, service: SynonymStub,

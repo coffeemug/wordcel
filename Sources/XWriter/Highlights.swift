@@ -99,6 +99,7 @@ final class HighlightController: ObservableObject {
         let source = editor.string
         let id = UUID()
         self.editor = editor
+        editor.highlightStyle = button.style
         activeButtonID = button.id
         activePrompt = button.prompt
         requestID = id
@@ -149,6 +150,10 @@ final class HighlightController: ObservableObject {
         guard let button = buttons.first(where: { $0.id == activeButtonID }), button.isConfigured, button.prompt == activePrompt else {
             dismiss()
             return
+        }
+        if editor?.highlightStyle != button.style {
+            editor?.highlightStyle = button.style
+            editor?.refreshHighlights()
         }
     }
 

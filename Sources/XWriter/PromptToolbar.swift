@@ -33,6 +33,7 @@ struct PromptButton: Codable, Identifiable, Equatable {
     var name = "New button"
     var icon = PromptIcon.eye
     var prompt = ""
+    var style = HighlightStyle()
     var isConfigured: Bool {
         !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
         !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -41,10 +42,27 @@ struct PromptButton: Codable, Identifiable, Equatable {
     static var examples: [PromptButton] {
         [
             PromptButton(name: "Latin words", icon: .leaf,
-                         prompt: "Highlight individual English words with Latin-derived roots, including borrowings through French. Include every qualifying occurrence. Exclude words with uncertain or mixed origins."),
+                         prompt: "Highlight individual English words with Latin-derived roots, including borrowings through French. Include every qualifying occurrence. Exclude words with uncertain or mixed origins.", style: .latin),
             PromptButton(name: "Removable wording", icon: .scissors,
-                         prompt: "Highlight words or phrases that can be deleted to make the writing tighter without losing its main meaning or breaking its grammar. Prefer clear redundancies, filler, and unnecessary qualifications. Highlight only the wording to remove, not the surrounding sentence.")
+                         prompt: "Highlight words or phrases that can be deleted to make the writing tighter without losing its main meaning or breaking its grammar. Prefer clear redundancies, filler, and unnecessary qualifications. Highlight only the wording to remove, not the surrounding sentence.", style: .cuts)
         ]
+    }
+}
+
+extension PromptButton {
+    private enum CodingKeys: String, CodingKey { case id, name, icon, prompt, style }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(UUID.self, forKey: .id)
+        name = try values.decode(String.self, forKey: .name)
+        icon = try values.decode(PromptIcon.self, forKey: .icon)
+        prompt = try values.decode(String.self, forKey: .prompt)
+        if values.contains(.style) {
+            style = try values.decode(HighlightStyle.self, forKey: .style)
+        } else {
+            style = Self.examples.first { $0.name == name || $0.prompt == prompt }?.style ?? HighlightStyle()
+        }
     }
 }
 
@@ -71,8 +89,9 @@ final class PromptToolbarSettings: ObservableObject {
             do {
                 guard let data = preferences.data(forKey: Self.preferenceKey) else { throw CocoaError(.coderReadCorrupt) }
                 let saved = try JSONDecoder().decode([PromptButton].self, from: data)
-                guard Set(saved.map(\.id)).count == saved.count else { throw CocoaError(.coderReadCorrupt) }
+                guard Set(saved.map(\.id)).count == saved.count, saved.allSatisfy({ $0.style.isValid }) else { throw CocoaError(.coderReadCorrupt) }
                 buttons = saved
+                save()
             } catch {
                 buttons = []
                 isReadOnly = true
@@ -222,7 +241,7 @@ struct ToolbarSettingsView: View {
                             .foregroundStyle(Theme.secondary).padding(30).frame(maxWidth: .infinity, maxHeight: .infinity)
                     } else {
                         ForEach($settings.buttons) { $button in
-                            if button.id == selection { PromptButtonEditor(button: $button) }
+                            if button.id == selection { PromptButtonEditor(button: $button, onError: { settings.error = $0 }) }
                         }
                     }
                 }
@@ -242,42 +261,47 @@ struct ToolbarSettingsView: View {
 
 private struct PromptButtonEditor: View {
     @Binding var button: PromptButton
+    let onError: (String) -> Void
     @ViewState<Bool> private var choosingIcon = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Toolbar button").font(.system(size: 20, weight: .bold))
-            HStack(spacing: 12) {
-                Button { choosingIcon = true } label: {
-                    Image(systemName: button.icon.rawValue).font(.system(size: 22))
-                        .foregroundStyle(Theme.blue).frame(width: 40, height: 36)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("Toolbar button").font(.system(size: 20, weight: .bold))
+                HStack(spacing: 12) {
+                    Button { choosingIcon = true } label: {
+                        Image(systemName: button.icon.rawValue).font(.system(size: 22))
+                            .foregroundStyle(Theme.blue).frame(width: 40, height: 36)
+                    }
+                    .help("Choose icon").accessibilityLabel("Choose icon")
+                    .popover(isPresented: $choosingIcon) {
+                        LazyVGrid(columns: Array(repeating: GridItem(.fixed(38)), count: 8), spacing: 8) {
+                            ForEach(PromptIcon.allCases) { icon in
+                                Button { button.icon = icon; choosingIcon = false } label: {
+                                    Image(systemName: icon.rawValue).font(.system(size: 20))
+                                        .frame(width: 38, height: 36)
+                                        .background(Theme.blue.opacity(button.icon == icon ? 0.16 : 0), in: RoundedRectangle(cornerRadius: 6))
+                                        .contentShape(Rectangle())
+                                }.buttonStyle(.plain).foregroundStyle(Theme.blue)
+                                    .help(icon.title).accessibilityLabel(icon.title)
+                            }
+                        }.padding(14).onExitCommand { choosingIcon = false }
+                    }
+                    TextField("Button name", text: $button.name).textFieldStyle(.roundedBorder)
+                        .accessibilityLabel("Button name")
                 }
-                .help("Choose icon").accessibilityLabel("Choose icon")
-                .popover(isPresented: $choosingIcon) {
-                    LazyVGrid(columns: Array(repeating: GridItem(.fixed(38)), count: 8), spacing: 8) {
-                        ForEach(PromptIcon.allCases) { icon in
-                            Button { button.icon = icon; choosingIcon = false } label: {
-                                Image(systemName: icon.rawValue).font(.system(size: 20))
-                                    .frame(width: 38, height: 36)
-                                    .background(Theme.blue.opacity(button.icon == icon ? 0.16 : 0), in: RoundedRectangle(cornerRadius: 6))
-                                    .contentShape(Rectangle())
-                            }.buttonStyle(.plain).foregroundStyle(Theme.blue)
-                                .help(icon.title).accessibilityLabel(icon.title)
-                        }
-                    }.padding(14).onExitCommand { choosingIcon = false }
-                }
-                TextField("Button name", text: $button.name).textFieldStyle(.roundedBorder)
-                    .accessibilityLabel("Button name")
-            }
-            Text("Prompt").font(.system(size: 14, weight: .semibold))
-            TextEditor(text: $button.prompt).font(.system(size: 14))
-                .scrollContentBackground(.hidden).padding(8)
-                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.border))
-                .accessibilityLabel("Highlighting prompt")
-            Text("Describe what to highlight. The app supplies the entire active post and handles the output format; you don't need to write JSON.")
-                .font(.system(size: 12)).foregroundStyle(Theme.secondary)
-            Text("Uses the composer's model and reasoning setting. Edits clear affected highlights and move the rest without calling the model again. Settings save automatically.")
-                .font(.system(size: 12)).foregroundStyle(Theme.secondary)
-        }.padding(24).frame(maxWidth: .infinity, maxHeight: .infinity)
+                Text("Prompt").font(.system(size: 14, weight: .semibold))
+                TextEditor(text: $button.prompt).font(.system(size: 14))
+                    .scrollContentBackground(.hidden).padding(8).frame(height: 140)
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.border))
+                    .accessibilityLabel("Highlighting prompt")
+                Text("Describe what to highlight. The app supplies the entire active post and handles the output format; you don't need to write JSON.")
+                    .font(.system(size: 12)).foregroundStyle(Theme.secondary)
+                Divider().padding(.vertical, 4)
+                HighlightStyleEditor(style: $button.style, onError: onError)
+                Text("Style changes apply immediately without another model call. Uses the composer's model and reasoning setting. Settings save automatically.")
+                    .font(.system(size: 12)).foregroundStyle(Theme.secondary)
+            }.padding(24).frame(maxWidth: .infinity, alignment: .leading)
+        }.frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
