@@ -129,21 +129,23 @@ struct ComposeView: View {
         VStack(spacing: 0) {
             Rectangle().fill(Theme.border).frame(height: 1)
             HStack(spacing: 0) {
-                HStack(spacing: 0) {
-                    tool(.photo, "Add photos") { model.pickImages() }
-                        .disabled(model.draft.posts[model.activeIndex].poll != nil || model.draft.posts[model.activeIndex].attachments.count >= 4)
-                    tool(.gif, "Add a GIF from your Mac") { model.pickImages(gifOnly: true) }
-                        .disabled(model.draft.posts[model.activeIndex].poll != nil || model.draft.posts[model.activeIndex].attachments.count >= 4)
-                    tool(.poll, "Add a poll") { model.draft.posts[model.activeIndex].poll = Poll() }
-                        .disabled(!model.draft.posts[model.activeIndex].attachments.isEmpty || model.draft.posts[model.activeIndex].poll != nil)
-                    tool(.emoji, "Emoji & Symbols (⌃⌘Space)") {
-                        if let editor = model.activeEditor { editor.window?.makeFirstResponder(editor) }
-                        NSApp.orderFrontCharacterPalette(nil)
+                SynonymToolbar(controller: model.synonyms) {
+                    HStack(spacing: 0) {
+                        tool(.photo, "Add photos") { model.pickImages() }
+                            .disabled(model.draft.posts[model.activeIndex].poll != nil || model.draft.posts[model.activeIndex].attachments.count >= 4)
+                        tool(.gif, "Add a GIF from your Mac") { model.pickImages(gifOnly: true) }
+                            .disabled(model.draft.posts[model.activeIndex].poll != nil || model.draft.posts[model.activeIndex].attachments.count >= 4)
+                        tool(.poll, "Add a poll") { model.draft.posts[model.activeIndex].poll = Poll() }
+                            .disabled(!model.draft.posts[model.activeIndex].attachments.isEmpty || model.draft.posts[model.activeIndex].poll != nil)
+                        tool(.emoji, "Emoji & Symbols (⌃⌘Space)") {
+                            if let editor = model.activeEditor { editor.window?.makeFirstResponder(editor) }
+                            NSApp.orderFrontCharacterPalette(nil)
+                        }
+                        tool(.calendar, "Plan a post") { planPopover.toggle() }
+                            .popover(isPresented: $planPopover, arrowEdge: .bottom) { PlanPicker(model: model) { planPopover = false } }
+                        tool(.location, "Add a location on X when you publish") { }
+                            .disabled(true)
                     }
-                    tool(.calendar, "Plan a post") { planPopover.toggle() }
-                        .popover(isPresented: $planPopover, arrowEdge: .bottom) { PlanPicker(model: model) { planPopover = false } }
-                    tool(.location, "Add a location on X when you publish") { }
-                        .disabled(true)
                 }.padding(.leading, 44)
                 Spacer(minLength: 8)
                 if model.draft.posts[model.activeIndex].hasContent {

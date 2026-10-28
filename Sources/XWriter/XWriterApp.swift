@@ -58,6 +58,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var composerWidthBeforeDrawer: CGFloat?
     private var frameAutosaveNameBeforeDrawer: NSWindow.FrameAutosaveName?
     private var isResizingDraftsDrawer = false
+    private var interactionMonitor: Any?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if let index = CommandLine.arguments.firstIndex(of: "--snapshot"), CommandLine.arguments.count > index + 1 {
@@ -65,7 +66,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         let isTesting = snapshotPath != nil || CommandLine.arguments.contains("--ui-test")
         let isolatedDirectory = isTesting ? FileManager.default.temporaryDirectory.appendingPathComponent("XWriter-preview-\(UUID())") : nil
-        model = ComposerModel(directory: isolatedDirectory)
+        let previewSynonyms = isTesting ? SelfCheck.SynonymStub() : nil
+        model = ComposerModel(directory: isolatedDirectory, synonymService: previewSynonyms)
         if CommandLine.arguments.contains("--demo") {
             model.draft.posts[0].text = "A little less scrolling. A little more writing.\n\nMade for the moments when you have something to say. ✨"
         }
@@ -76,6 +78,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
            CommandLine.arguments.count > index + 1, let count = Int(CommandLine.arguments[index + 1]),
            (0...25_100).contains(count) {
             model.draft.posts[0].text = String(repeating: "a", count: count)
+        }
+        if isTesting && CommandLine.arguments.contains("--synonyms") {
+            model.draft.posts[0].text = "A little help goes a long way."
         }
         if CommandLine.arguments.contains("--dark") { NSApp.appearance = NSAppearance(named: .darkAqua) }
         else { model.applyAppearance() }
@@ -103,14 +108,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.center()
         if !isTesting { window.setFrameAutosaveName("XWriterComposer") }
         window.makeKeyAndOrderFront(nil)
+        interactionMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel]) { [weak self] event in
+            guard let self, event.window === self.window else { return event }
+            let modifiers = event.modifierFlags.intersection([.control, .command, .option, .shift])
+            if event.type == .keyDown && modifiers == .control && event.keyCode == 49 { return event }
+            // Leave the suggestion rows available for clicking and horizontal scrolling.
+            if event.locationInWindow.y < 58 && event.locationInWindow.x < self.model.composerWidth,
+               case .ready = self.model.synonyms.state {
+                if event.type == .leftMouseDown || event.type == .scrollWheel { return event }
+            }
+            self.model.synonyms.dismiss()
+            return event
+        }
         NSApp.activate(ignoringOtherApps: true)
         if isTesting && CommandLine.arguments.contains("--drafts") { model.toggleDrafts() }
+        if isTesting && CommandLine.arguments.contains("--synonyms") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                guard let self, let editor = self.model.activeEditor else { return }
+                editor.setSelectedRange(NSRange(location: 11, length: 0))
+                self.model.synonyms.lookup(in: editor)
+            }
+        }
         if snapshotPath != nil {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in self?.captureSnapshot() }
         }
-        if CommandLine.arguments.contains("--ui-test") {
+        if CommandLine.arguments.contains("--ui-test"), let previewSynonyms {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                SelfCheck.interface(model: self.model, window: self.window)
+                SelfCheck.interface(model: self.model, window: self.window, synonymService: previewSynonyms)
             }
         }
     }
@@ -185,9 +209,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         scheduleResize(to: contentHeight)
     }
     func windowDidChangeScreen(_ notification: Notification) { scheduleResize(to: contentHeight) }
+    func windowDidResignKey(_ notification: Notification) { model.synonyms.lostFocus() }
+    func windowWillMove(_ notification: Notification) { model.synonyms.dismiss() }
+    func windowWillStartLiveResize(_ notification: Notification) { model.synonyms.dismiss() }
 
-    func windowShouldClose(_ sender: NSWindow) -> Bool { model.save() }
+    func windowShouldClose(_ sender: NSWindow) -> Bool { model.synonyms.dismiss(); return model.save() }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        model?.synonyms.dismiss()
         guard model != nil, !model.save() else { return .terminateNow }
         let alert = NSAlert()
         alert.messageText = "Your latest changes couldn't be saved."
@@ -195,6 +223,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         alert.addButton(withTitle: "Keep Editing")
         alert.addButton(withTitle: "Quit Without Saving")
         return alert.runModal() == .alertSecondButtonReturn ? .terminateNow : .terminateCancel
+    }
+    func applicationWillTerminate(_ notification: Notification) {
+        if let interactionMonitor { NSEvent.removeMonitor(interactionMonitor) }
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         window.makeKeyAndOrderFront(nil)
@@ -232,6 +263,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         item("Paste", action: #selector(NSText.paste(_:)), key: "v", in: edit, responder: true)
         item("Select All", action: #selector(NSText.selectAll(_:)), key: "a", in: edit, responder: true)
         edit.addItem(.separator())
+        item("Find Synonyms", action: #selector(findSynonyms), key: " ", modifiers: .control, in: edit)
         item("Emoji & Symbols", action: #selector(NSApplication.orderFrontCharacterPalette(_:)), key: " ", modifiers: [.command, .control], in: edit, target: NSApp)
 
         let view = submenu("View", in: menu)
@@ -271,6 +303,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc private func drafts() { model.toggleDrafts(); show() }
     @objc private func addPhotos() { model.pickImages() }
     @objc private func addPost() { model.addPost() }
+    @objc private func findSynonyms() {
+        guard let editor = window.firstResponder as? ComposerTextView else {
+            model.notify("Place the cursor in a post to find synonyms.")
+            return
+        }
+        model.synonyms.lookup(in: editor)
+    }
     @objc private func post() { model.prepareHandoff() }
     @objc private func close() { window.performClose(nil) }
     @objc private func show() { window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true) }

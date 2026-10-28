@@ -1,6 +1,6 @@
 # XWriter
 
-A native macOS app that closely approximates the X post composer. Built with SwiftUI and AppKit, with a real `NSTextView` editor. No web view, Electron, external packages, or account credentials.
+A native macOS app that closely approximates the X post composer. Built with SwiftUI and AppKit, with a real `NSTextView` editor. No web view, Electron, or X account credentials.
 
 ## Run
 
@@ -19,6 +19,7 @@ The build produces an ad-hoc signed `XWriter.app` in the project directory. You 
 - The window grows downward as you type, up to 760 points or the available screen height, then scrolls. Deleting text shrinks it again.
 - Light, dark, and system appearance from the View menu.
 - Native text selection, undo/redo, spell checking, emoji picker, and highlighting for links, hashtags, and mentions.
+- On-demand Claude synonyms grouped by Latin and Germanic roots, with click-to-replace suggestions.
 - Up to four image attachments from the file picker, clipboard, or drag and drop. GIF files are supported; the inline preview is static. Images can have editable ALT descriptions.
 - Thread composition, poll drafting, and an optional planned date.
 - Automatic local draft saving, restoration, and deletion in a right-side drawer. The drawer icon widens the window to keep the composer alongside your drafts. Closing the window keeps the draft; clicking the Dock icon reopens it.
@@ -32,6 +33,16 @@ Images, ALT descriptions, polls, reply permissions, and planned dates are draft 
 
 The character counter approximates X's weighting, including CJK characters, combined emoji, Unicode normalization, and 23-character web links. URL detection uses Apple's `NSDataDetector`, so unusual URLs can differ from X's parser. X's own editor makes the final validation.
 
+## Synonyms
+
+Install the official [Claude Code CLI](https://code.claude.com/docs/en/setup) and use a Claude subscription that includes Claude Code. Put the cursor inside a word (or immediately after it) and press **⌃Space**. The first lookup opens Claude Code's own browser sign-in flow. XWriter uses a separate CLI profile at `~/Library/Application Support/XWriter/claude-code`; the CLI manages all authentication. XWriter does not read or copy its credentials and does not use API-key billing.
+
+While Claude runs in the background, the toolbar icons become `pulling synonyms...` with cycling dots. Results appear in two rows, Latin above Germanic. Click a synonym to replace just that occurrence. Capitalization and native undo/redo are preserved. Typing, moving the cursor, clicking elsewhere, or leaving the editor cancels the lookup and restores the icons; entering the browser during sign-in is the exception. Long result rows can be scrolled horizontally.
+
+Only the target word is sent, not the post or attachments. Each lookup uses a fresh temporary working directory, no session persistence, and no tools, MCP servers, skills, or user/project hooks. Claude may still misclassify a word's origins; suggestions are not verified dictionary entries. Empty groups are shown as “None found.”
+
+If macOS intercepts **⌃Space** to switch input sources, change or disable that binding in **System Settings → Keyboard → Keyboard Shortcuts → Input Sources**. **Edit → Find Synonyms** also starts a lookup. Update Claude Code if it reports unsupported command-line options.
+
 ## Keyboard shortcuts
 
 | Shortcut | Action |
@@ -42,6 +53,7 @@ The character counter approximates X's weighting, including CJK characters, comb
 | ⌘O | Add photos |
 | ⌘Return | Review for publishing on X |
 | ⌘⇧Return | Add another post to the thread |
+| ⌃Space | Find synonyms for the word at the cursor |
 | ⌃⌘Space | Emoji & Symbols |
 | ⌘⇧D | Toggle light/dark appearance |
 | ⌘W | Close the composer |
@@ -59,7 +71,7 @@ Drafts and attached image data are written atomically to `~/Library/Application 
 ./XWriter.app/Contents/MacOS/XWriter --ui-test
 ```
 
-The model checks cover weighted counts, Unicode and URL handling, post and poll validation, draft round trips, editing without duplication, thread restoration, attachments, deletion, and corrupt-file protection. The native UI checks exercise the avatar, initial focus, typing, undo/redo, drawer toggling and sizing, window expansion and its screen-aware cap, caret visibility while scrolling, shrinking, thread editing, and persistence.
+The model checks cover weighted counts, Unicode and URL handling, post and poll validation, draft round trips, editing without duplication, thread restoration, attachments, deletion, corrupt-file protection, synonym targeting, and response validation. The native UI checks also exercise synonym shortcuts, cancellation, replacement and undo, simulated sign-in, and subprocess timeouts. Checks use synthetic Claude responses and never sign in or send your drafts to Claude.
 
 To render isolated previews without modifying your drafts:
 
@@ -67,6 +79,7 @@ To render isolated previews without modifying your drafts:
 ./XWriter.app/Contents/MacOS/XWriter --snapshot /tmp/xwriter-light.png
 ./XWriter.app/Contents/MacOS/XWriter --snapshot /tmp/xwriter-dark.png --demo --dark
 ./XWriter.app/Contents/MacOS/XWriter --snapshot /tmp/xwriter-drafts.png --demo --drafts
+./XWriter.app/Contents/MacOS/XWriter --snapshot /tmp/xwriter-synonyms.png --synonyms
 ```
 
 The project uses a small `ViewState` wrapper around SwiftUI's public `State<Value>` because recent Command Line Tools SDKs expose a same-named macro whose plugin only ships with Xcode.

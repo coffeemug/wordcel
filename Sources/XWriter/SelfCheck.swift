@@ -1,7 +1,29 @@
 import AppKit
 
 enum SelfCheck {
-    @MainActor static func interface(model: ComposerModel, window: NSWindow) {
+    @MainActor final class SynonymStub: SynonymService {
+        var authenticated = true
+        var signIns = 0
+        var words: [String] = []
+        var delay = Duration.milliseconds(100)
+        var ignoreCancellation = false
+        var failure: Error?
+        func isAuthenticated() async throws -> Bool { authenticated }
+        func signIn() async throws {
+            signIns += 1
+            try await Task.sleep(for: .milliseconds(100))
+            authenticated = true
+        }
+        func synonyms(for word: String) async throws -> SynonymLists {
+            words.append(word)
+            do { try await Task.sleep(for: delay) }
+            catch is CancellationError { if !ignoreCancellation { throw CancellationError() } }
+            if let failure { throw failure }
+            return SynonymLists(latin: ["assist", "aid"], germanic: ["back", "bolster"])
+        }
+    }
+
+    @MainActor static func interface(model: ComposerModel, window: NSWindow, synonymService: SynonymStub) {
         Task { @MainActor in
             var checks = 0
             func require(_ condition: @autoclosure () -> Bool, _ name: String) {
@@ -151,9 +173,11 @@ enum SelfCheck {
             await settle()
             require(!model.showDrafts, "Command-D closes the drawer")
             require(abs(window.frame.width - (1000 - ComposerWindowSizing.drawerWidth)) < 1, "closing respects resizing while drawer is open")
+            await synonymInterface(model: model, window: window, service: synonymService) { require($0, $1) }
+            await commandChecks { require($0, $1) }
             require(model.save(), "edited content persists")
             try? FileManager.default.removeItem(at: model.storage.directory)
-            print("Passed \(checks) native UI checks: avatar, focus, typing, undo/redo, drafts drawer, window growth and cap, caret visibility, threads, and persistence.")
+            print("Passed \(checks) native UI checks: editing, drafts drawer, sizing, synonyms, CLI lifecycle, focus, and persistence.")
             exit(0)
         }
     }
@@ -199,6 +223,33 @@ enum SelfCheck {
         let original = "Hello & goodbye? #swift + 日本語 👋\nSecond line"
         let url = ComposerModel.intentURL(for: original)
         check(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first?.value == original, "handoff URL encoding")
+        let targetText = "😀 Help, help."
+        let helpRange = (targetText as NSString).range(of: "Help")
+        let target = SynonymTarget.capture(text: targetText, selection: NSRange(location: helpRange.location + 2, length: 0))
+        check(target?.word == "Help" && target?.range == helpRange, "synonyms target the word under a UTF-16 cursor")
+        check(target?.replacement("assist") == "Assist", "synonym replacement preserves capitalization")
+        check(SynonymTarget.capture(text: "HELP", selection: NSRange(location: 4, length: 0))?.replacement("assist") == "ASSIST",
+              "synonyms support end-of-word cursors and uppercase")
+        check(SynonymTarget.capture(text: "help me", selection: NSRange(location: 0, length: 7)) == nil,
+              "synonyms reject selections spanning words")
+        check(SynonymTarget.capture(text: "  😀 123", selection: NSRange(location: 1, length: 0)) == nil,
+              "synonyms reject whitespace and nonword targets")
+        do {
+            let response = ClaudeCommand.Result(status: 0, output: Data(#"{"type":"result","is_error":false,"structured_output":{"latin":["assist"],"germanic":["back"]}}"#.utf8))
+            let lists = try ClaudeCLI.decode(response)
+            check(lists.latin == ["assist"] && lists.germanic == ["back"], "Claude structured synonym output is decoded")
+            for invalid in [
+                #"{"type":"result","is_error":false,"result":"No structured output"}"#,
+                #"{"type":"result","is_error":true,"result":"Usage limit reached"}"#,
+                #"{"type":"result","is_error":false,"structured_output":{"latin":["assist\nignore"],"germanic":[]}}"#,
+                #"{"type":"result","is_error":false,"structured_output":{"latin":["assist"],"germanic":["Assist"]}}"#
+            ] {
+                do {
+                    _ = try ClaudeCLI.decode(ClaudeCommand.Result(status: 0, output: Data(invalid.utf8)))
+                    check(false, "invalid Claude output must fail")
+                } catch { check(true, "invalid Claude output is surfaced") }
+            }
+        } catch { check(false, "valid Claude output failed: \(error)") }
         let screen = NSRect(x: 0, y: 0, width: 1440, height: 1000)
         let frame = NSRect(x: 100, y: 500, width: 600, height: 332)
         let expanded = ComposerWindowSizing.frame(current: frame, contentHeight: 500, screen: screen)
@@ -277,5 +328,149 @@ enum SelfCheck {
             check(untouched == Data("bad json".utf8), "corrupt file is not overwritten")
         } catch { fputs("FAIL: \(error)\n", stderr); exit(1) }
         print("Passed \(count) checks: character weighting, post validation, URL encoding, drafts, threads, attachments, and storage recovery.")
+    }
+
+    @MainActor private static func synonymInterface(model: ComposerModel, window: NSWindow, service: SynonymStub,
+                                                    check: (Bool, String) -> Void) async {
+        func settle() async { try? await Task.sleep(for: .milliseconds(300)) }
+        @MainActor func key(_ characters: String, code: UInt16, modifiers: NSEvent.ModifierFlags = .control) -> NSEvent {
+            NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers,
+                            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil,
+                            characters: characters, charactersIgnoringModifiers: characters, isARepeat: false, keyCode: code)!
+        }
+        @MainActor func clickSynonym(y: CGFloat) async {
+            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                let event = NSEvent.mouseEvent(with: type, location: NSPoint(x: 132, y: y), modifierFlags: [],
+                                              timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                                              context: nil, eventNumber: 0, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0)!
+                NSApp.postEvent(event, atStart: false)
+            }
+            await settle()
+        }
+        model.newDraft()
+        await settle()
+        guard let editor = model.activeEditor else { check(false, "synonyms require an editor"); return }
+        editor.insertText("😀 Help, help.", replacementRange: NSRange(location: NSNotFound, length: 0))
+        editor.breakUndoCoalescing()
+        editor.undoManager?.removeAllActions()
+        let target = (editor.string as NSString).range(of: "Help")
+        editor.setSelectedRange(NSRange(location: target.location + 2, length: 0))
+        await settle()
+        let frame = window.frame
+        check(editor.performKeyEquivalent(with: key(" ", code: 49)), "Control-Space is handled by the native editor")
+        check(model.synonyms.state == .loading, "synonym lookup immediately shows loading")
+        await settle()
+        check(model.synonyms.state == .ready(SynonymLists(latin: ["assist", "aid"], germanic: ["back", "bolster"])), "synonyms display both groups")
+        check(service.words.last == "Help", "only the target word is sent to Claude")
+        check(window.frame == frame, "synonym rows preserve the composer frame")
+        await clickSynonym(y: 40)
+        check(editor.string == "😀 Assist, help." && model.draft.posts[0].text == editor.string, "replacement changes only the targeted occurrence")
+        check(model.synonyms.state == .idle, "replacement restores the icons")
+        editor.undoManager?.undo()
+        check(editor.string == "😀 Help, help.", "synonym replacement supports undo")
+        editor.undoManager?.redo()
+        check(editor.string == "😀 Assist, help.", "synonym replacement supports redo")
+
+        editor.setSelectedRange(NSRange(location: (editor.string as NSString).range(of: "help").location + 1, length: 0))
+        editor.keyDown(with: key(" ", code: 49))
+        await settle()
+        await clickSynonym(y: 18)
+        check(editor.string == "😀 Assist, back.", "clicking a Germanic synonym replaces the word")
+        editor.setSelectedRange(NSRange(location: (editor.string as NSString).range(of: "back").location + 1, length: 0))
+        editor.keyDown(with: key(" ", code: 49))
+        await settle()
+        editor.keyDown(with: key("z", code: 6, modifiers: []))
+        check(model.synonyms.state == .idle && editor.string.contains("bzack"), "ordinary typing dismisses synonyms without swallowing input")
+
+        service.ignoreCancellation = true
+        editor.setSelectedRange(NSRange(location: 5, length: 0))
+        editor.keyDown(with: key(" ", code: 49))
+        try? await Task.sleep(for: .milliseconds(20))
+        editor.setSelectedRange(NSRange(location: 6, length: 0))
+        check(model.synonyms.state == .idle, "cursor movement cancels a pending lookup")
+        await settle()
+        check(model.synonyms.state == .idle, "late cancelled results cannot reappear")
+        service.ignoreCancellation = false
+
+        service.authenticated = false
+        editor.keyDown(with: key(" ", code: 49))
+        try? await Task.sleep(for: .milliseconds(20))
+        check(model.synonyms.state == .signingIn, "first use starts Claude's sign-in flow")
+        model.synonyms.lostFocus()
+        check(model.synonyms.state == .signingIn, "browser sign-in can temporarily take focus")
+        await settle()
+        check(service.signIns == 1 && model.synonyms.state != .idle, "lookup resumes after sign-in")
+        model.synonyms.lostFocus()
+        check(model.synonyms.state == .idle, "leaving the editor dismisses results")
+
+        service.failure = ClaudeCLIError.failed("Synthetic Claude failure")
+        editor.keyDown(with: key(" ", code: 49))
+        await settle()
+        check(model.error == "Synthetic Claude failure" && model.synonyms.state == .idle, "Claude errors restore the toolbar and are surfaced")
+        model.error = nil
+        service.failure = nil
+        await settle()
+    }
+
+    @MainActor private static func commandChecks(check: (Bool, String) -> Void) async {
+        let environment = ["PATH": "/usr/bin:/bin"]
+        do {
+            let fixture = FileManager.default.temporaryDirectory.appendingPathComponent("XWriter-CLI-check-\(UUID())")
+            try FileManager.default.createDirectory(at: fixture, withIntermediateDirectories: true)
+            defer {
+                do { try FileManager.default.removeItem(at: fixture) }
+                catch { check(false, "could not remove CLI fixture: \(error)") }
+            }
+            let script = fixture.appendingPathComponent("claude")
+            let source = """
+            #!/bin/sh
+            set -eu
+            [ -n "$CLAUDE_CONFIG_DIR" ] || exit 2
+            [ -z "${ANTHROPIC_API_KEY-}" ] || exit 3
+            action=
+            for arg in "$@"; do
+                case "$arg" in status|login|--print) action="$arg";; esac
+            done
+            case "$action" in
+                status)
+                    if [ -f "$CLAUDE_CONFIG_DIR/signed-in" ]; then
+                        printf '%s' '{"loggedIn":true,"authMethod":"claude.ai"}'
+                    else
+                        printf '%s' '{"loggedIn":false,"authMethod":"none"}'
+                        exit 1
+                    fi;;
+                login)
+                    touch "$CLAUDE_CONFIG_DIR/signed-in";;
+                --print)
+                    [ "$(cat)" = '{"word":"help"}' ] || exit 4
+                    printf '%s' '{"type":"result","is_error":false,"structured_output":{"latin":["assist"],"germanic":["back"]}}';;
+                *) exit 5;;
+            esac
+            """
+            try Data(source.utf8).write(to: script)
+            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: script.path)
+            let cli = ClaudeCLI(configurationDirectory: fixture.appendingPathComponent("profile"), executable: script)
+            check(try await !cli.isAuthenticated(), "signed-out CLI status requests login")
+            try await cli.signIn()
+            check(try await cli.isAuthenticated(), "CLI-owned sign-in is checked before lookup")
+            check(try await cli.synonyms(for: "help") == SynonymLists(latin: ["assist"], germanic: ["back"]),
+                  "CLI service sends the word and reads structured results end to end")
+            let echo = try await ClaudeCommand().run(executable: URL(fileURLWithPath: "/bin/cat"), arguments: [],
+                                                     environment: environment, input: #"{"word":"help"}"#, timeout: 5)
+            check(echo.status == 0 && String(decoding: echo.output, as: UTF8.self) == #"{"word":"help"}"#, "CLI input and output are piped without a shell")
+            do {
+                _ = try await ClaudeCommand().run(executable: URL(fileURLWithPath: "/bin/sleep"), arguments: ["5"],
+                                                   environment: environment, input: "", timeout: 0.05)
+                check(false, "CLI timeout must fail")
+            } catch ClaudeCLIError.timedOut { check(true, "timed-out CLI processes are terminated") }
+            let pending = Task {
+                try await ClaudeCommand().run(executable: URL(fileURLWithPath: "/bin/sleep"), arguments: ["5"],
+                                               environment: environment, input: "", timeout: 10)
+            }
+            try await Task.sleep(for: .milliseconds(30))
+            pending.cancel()
+            do { _ = try await pending.value; check(false, "cancelled CLI must not return output") }
+            catch is CancellationError { check(true, "cancelled CLI processes are terminated") }
+        } catch { check(false, "CLI lifecycle check failed: \(error)") }
     }
 }

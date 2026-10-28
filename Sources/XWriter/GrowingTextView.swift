@@ -64,6 +64,16 @@ struct GrowingTextView: NSViewRepresentable {
             model?.activeEditor = view
         }
         view.onSubmit = { [weak model] in model?.prepareHandoff() }
+        view.onSynonymLookup = { [weak model, weak view] in
+            guard let view else { return }
+            model?.synonyms.lookup(in: view)
+        }
+        view.onInteraction = { [weak model] in model?.synonyms.dismiss() }
+        view.onSelectionChange = { [weak model, weak view] in
+            guard let view else { return }
+            model?.synonyms.invalidateIfChanged(in: view)
+        }
+        view.onBlur = { [weak model] in model?.synonyms.lostFocus() }
         view.onImages = { [weak model] urls in model?.addImages(urls, to: postID) }
         view.onImagePaste = { [weak model] image in model?.pasteImage(image, to: postID) }
     }
@@ -79,6 +89,10 @@ struct GrowingTextView: NSViewRepresentable {
             parent.text = view.string
             style(view)
             measure(view)
+        }
+
+        func textViewDidChangeSelection(_ notification: Notification) {
+            (notification.object as? ComposerTextView)?.onSelectionChange?()
         }
 
         func measure(_ view: NSTextView) {
@@ -118,6 +132,10 @@ final class ComposerTextView: NSTextView {
     var onFocusRequest: (() -> Void)?
     var onFocus: (() -> Void)?
     var onSubmit: (() -> Void)?
+    var onSynonymLookup: (() -> Void)?
+    var onInteraction: (() -> Void)?
+    var onSelectionChange: (() -> Void)?
+    var onBlur: (() -> Void)?
     var onImages: (([URL]) -> Void)?
     var onImagePaste: ((NSImage) -> Void)?
     var onResize: (() -> Void)?
@@ -135,15 +153,40 @@ final class ComposerTextView: NSTextView {
         return result
     }
 
+    override func resignFirstResponder() -> Bool {
+        let result = super.resignFirstResponder()
+        if result { onBlur?() }
+        return result
+    }
+
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
         onResize?()
     }
 
     override func keyDown(with event: NSEvent) {
+        if handleSynonymShortcut(event) { return }
+        onInteraction?()
         if event.modifierFlags.contains(.command) && event.keyCode == 36 { onSubmit?(); return }
         super.keyDown(with: event)
         revealSelectionAfterLayout()
+    }
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if window?.firstResponder === self, handleSynonymShortcut(event) { return true }
+        return super.performKeyEquivalent(with: event)
+    }
+
+    private func handleSynonymShortcut(_ event: NSEvent) -> Bool {
+        guard event.modifierFlags.intersection([.control, .command, .option, .shift]) == .control,
+              event.keyCode == 49 else { return false }
+        onSynonymLookup?()
+        return true
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        onInteraction?()
+        super.mouseDown(with: event)
     }
 
     func revealSelectionAfterLayout() {

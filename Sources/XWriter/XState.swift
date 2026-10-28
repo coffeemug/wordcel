@@ -92,9 +92,9 @@ struct DraftStorage {
 
 @MainActor
 final class ComposerModel: ObservableObject {
-    @Published var draft: Draft { didSet { queueSave() } }
+    @Published var draft: Draft { didSet { synonyms.dismiss(); queueSave() } }
     @Published var drafts: [Draft]
-    @Published var activePostID: UUID
+    @Published var activePostID: UUID { didSet { if activePostID != oldValue { synonyms.dismiss() } } }
     @Published var composerWidth: CGFloat = 600
     @Published var showDrafts = false {
         didSet {
@@ -109,6 +109,7 @@ final class ComposerModel: ObservableObject {
     }
     @Published var avatar: NSImage?
     let storage: DraftStorage
+    let synonyms: SynonymController
     private var saveWork: DispatchWorkItem?
     private var toastWork: DispatchWorkItem?
     private var canSave = true
@@ -116,10 +117,11 @@ final class ComposerModel: ObservableObject {
     var onContentHeightChange: ((CGFloat) -> Void)?
     var onDraftsVisibilityChange: ((Bool) -> Void)?
 
-    init(directory: URL? = nil) {
+    init(directory: URL? = nil, synonymService: (any SynonymService)? = nil) {
         let base = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("XWriter", isDirectory: true)
         storage = DraftStorage(directory: base)
+        synonyms = SynonymController(service: synonymService ?? ClaudeCLI(configurationDirectory: base.appendingPathComponent("claude-code")))
         var initial = DraftArchive()
         var readError: String?
         do { initial = try storage.read() }
@@ -135,6 +137,7 @@ final class ComposerModel: ObservableObject {
             ?? Bundle.main.url(forResource: "me", withExtension: "png").flatMap { NSImage(contentsOf: $0) }
             ?? NSImage(contentsOfFile: "me.png")
         error = readError
+        synonyms.onError = { [weak self] message in self?.error = message }
     }
 
     var activeIndex: Int { draft.posts.firstIndex(where: { $0.id == activePostID }) ?? 0 }
