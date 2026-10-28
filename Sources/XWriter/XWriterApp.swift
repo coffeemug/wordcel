@@ -55,6 +55,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var snapshotPath: String?
     private var contentHeight = ComposerWindowSizing.minimumHeight
     private var resizeWork: DispatchWorkItem?
+    private var composerWidthBeforeDrawer: CGFloat?
+    private var frameAutosaveNameBeforeDrawer: NSWindow.FrameAutosaveName?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if let index = CommandLine.arguments.firstIndex(of: "--snapshot"), CommandLine.arguments.count > index + 1 {
@@ -86,9 +88,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.isMovableByWindowBackground = true
         window.isReleasedWhenClosed = false
         window.backgroundColor = Theme.backgroundNS
-        window.minSize = NSSize(width: 560, height: 300)
+        window.minSize = NSSize(width: ComposerWindowSizing.minimumWidth, height: 300)
         window.delegate = self
         model.onContentHeightChange = { [weak self] height in self?.scheduleResize(to: height) }
+        model.onDraftsVisibilityChange = { [weak self] visible in self?.resizeDraftsDrawer(visible) }
         for button in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
             window.standardWindowButton(button)?.isHidden = true
         }
@@ -97,6 +100,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if !isTesting { window.setFrameAutosaveName("XWriterComposer") }
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        if isTesting && CommandLine.arguments.contains("--drafts") { model.toggleDrafts() }
         if snapshotPath != nil {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in self?.captureSnapshot() }
         }
@@ -126,7 +130,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         model.activeEditor?.revealSelectionAfterLayout()
     }
 
-    func windowDidEndLiveResize(_ notification: Notification) { scheduleResize(to: contentHeight) }
+    private func resizeDraftsDrawer(_ visible: Bool) {
+        guard let window else { return }
+        if visible {
+            composerWidthBeforeDrawer = window.frame.width
+            // Don't restore the expanded drawer width as the composer width on the next launch.
+            let name = window.frameAutosaveName
+            if !name.isEmpty {
+                window.saveFrame(usingName: name)
+                window.setFrameAutosaveName("")
+                frameAutosaveNameBeforeDrawer = name
+            }
+        }
+        let composerWidth = composerWidthBeforeDrawer ?? window.frame.width
+        window.minSize.width = ComposerWindowSizing.minimumWidth + (visible ? ComposerWindowSizing.drawerWidth : 0)
+        if !window.styleMask.contains(.fullScreen), let screen = window.screen ?? NSScreen.main {
+            let frame = ComposerWindowSizing.frame(current: window.frame, composerWidth: composerWidth,
+                                                   showingDrafts: visible, screen: screen.visibleFrame)
+            window.setFrame(frame, display: true)
+        }
+        if !visible {
+            composerWidthBeforeDrawer = nil
+            if let name = frameAutosaveNameBeforeDrawer {
+                window.setFrameAutosaveName(name)
+                window.saveFrame(usingName: name)
+                frameAutosaveNameBeforeDrawer = nil
+            }
+            if let editor = model.activeEditor { window.makeFirstResponder(editor) }
+        }
+    }
+
+    func windowDidEndLiveResize(_ notification: Notification) {
+        if model.showDrafts { composerWidthBeforeDrawer = window.frame.width - ComposerWindowSizing.drawerWidth }
+        scheduleResize(to: contentHeight)
+    }
     func windowDidChangeScreen(_ notification: Notification) { scheduleResize(to: contentHeight) }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool { model.save() }
@@ -158,7 +195,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let file = submenu("File", in: menu)
         item("New Post", action: #selector(newPost), key: "n", in: file)
         item("Save Draft", action: #selector(saveDraft), key: "s", in: file)
-        item("Drafts…", action: #selector(drafts), key: "d", in: file)
+        item("Toggle Drafts", action: #selector(drafts), key: "d", in: file)
         file.addItem(.separator())
         item("Add Photos…", action: #selector(addPhotos), key: "o", in: file)
         item("Add Another Post", action: #selector(addPost), key: "\r", modifiers: [.command, .shift], in: file)
@@ -211,7 +248,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     @objc private func newPost() { model.newDraft(); show() }
     @objc private func saveDraft() { if model.save() { model.notify("Draft saved") } }
-    @objc private func drafts() { _ = model.save(); model.showDrafts = true; show() }
+    @objc private func drafts() { model.toggleDrafts(); show() }
     @objc private func addPhotos() { model.pickImages() }
     @objc private func addPost() { model.addPost() }
     @objc private func post() { model.prepareHandoff() }

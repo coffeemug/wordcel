@@ -2,7 +2,7 @@ import SwiftUI
 
 // Drawn in the same 24-point coordinate space as the web composer's icons.
 struct ComposerIcon: View {
-    enum Kind { case close, photo, gif, poll, emoji, calendar, location, plus, globe }
+    enum Kind { case close, drawer, photo, gif, poll, emoji, calendar, location, plus, globe }
     let kind: Kind
     var size: CGFloat = 20
 
@@ -15,6 +15,12 @@ struct ComposerIcon: View {
             case .close:
                 p.move(to: CGPoint(x: 6, y: 6)); p.addLine(to: CGPoint(x: 18, y: 18))
                 p.move(to: CGPoint(x: 18, y: 6)); p.addLine(to: CGPoint(x: 6, y: 18))
+            case .drawer:
+                p.addRoundedRect(in: CGRect(x: 3, y: 4, width: 18, height: 16), cornerSize: CGSize(width: 2, height: 2))
+                p.move(to: CGPoint(x: 14, y: 4)); p.addLine(to: CGPoint(x: 14, y: 20))
+                for y in [9.0, 12.0, 15.0] {
+                    p.move(to: CGPoint(x: 17, y: y)); p.addLine(to: CGPoint(x: 18, y: y))
+                }
             case .photo:
                 p.addRoundedRect(in: CGRect(x: 3, y: 3, width: 18, height: 18), cornerSize: CGSize(width: 2, height: 2))
                 p.move(to: CGPoint(x: 3, y: 17)); p.addLines([CGPoint(x: 9, y: 11), CGPoint(x: 13, y: 15), CGPoint(x: 16, y: 12), CGPoint(x: 21, y: 17)])

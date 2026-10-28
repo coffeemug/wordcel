@@ -48,7 +48,7 @@ struct GrowingTextView: NSViewRepresentable {
         }
         context.coordinator.style(view)
         context.coordinator.measure(view)
-        if model.activePostID == postID && !view.didRequestFocus {
+        if model.activePostID == postID && (!view.didRequestFocus || model.activeEditor !== view) {
             view.didRequestFocus = true
             DispatchQueue.main.async { [weak view] in
                 guard let view, model.activePostID == postID else { return }

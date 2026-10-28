@@ -9,6 +9,16 @@ enum SelfCheck {
                 checks += 1
             }
             func settle() async { try? await Task.sleep(for: .milliseconds(300)) }
+            @MainActor func clickHeader(at x: CGFloat) async {
+                let location = NSPoint(x: x, y: window.contentView!.bounds.height - 26)
+                for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                    let event = NSEvent.mouseEvent(with: type, location: location, modifierFlags: [],
+                                                  timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                                                  context: nil, eventNumber: 0, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0)!
+                    window.sendEvent(event)
+                }
+                await settle()
+            }
             guard let editor = model.activeEditor else { fputs("UI FAIL: no active editor\n", stderr); exit(1) }
             let initialFrame = window.frame
             require(model.avatar != nil, "profile photo loads")
@@ -21,6 +31,19 @@ enum SelfCheck {
             require(model.draft.posts[0].text.isEmpty, "native undo")
             editor.undoManager?.redo()
             require(model.draft.posts[0].text == "Hello #native", "native redo")
+            let editorWidth = editor.bounds.width
+            await clickHeader(at: initialFrame.width - 25)
+            require(model.showDrafts && window.attachedSheet == nil, "drafts open without a dialog")
+            require(abs(window.frame.width - initialFrame.width - ComposerWindowSizing.drawerWidth) < 1, "drawer widens the window")
+            require(abs(editor.bounds.width - editorWidth) < 1, "drawer preserves composer width")
+            require(abs(window.frame.height - initialFrame.height) < 2, "drawer does not change composer height")
+            require(model.drafts.first?.posts[0].text == "Hello #native", "opening the drawer saves current text")
+            editor.insertText(" with drawer", replacementRange: NSRange(location: NSNotFound, length: 0))
+            require(model.draft.posts[0].text == "Hello #native with drawer", "composer remains editable with drawer open")
+            await clickHeader(at: initialFrame.width - 25)
+            require(!model.showDrafts, "same icon closes the drawer")
+            require(abs(window.frame.width - initialFrame.width) < 1, "closing restores the composer width")
+            require(window.firstResponder === editor, "closing the drawer returns focus to the editor")
             editor.insertText(String(repeating: "\nA line of text", count: 12), replacementRange: NSRange(location: NSNotFound, length: 0))
             await settle()
             require(editor.bounds.height > 250, "multiline editor grows")
@@ -55,9 +78,30 @@ enum SelfCheck {
             window.setContentSize(NSSize(width: 560, height: 300))
             await settle()
             require(model.activeEditor === editor, "focus returns after removing a post")
+            let draftsShortcut = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
+                                                  timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                                                  context: nil, characters: "d", charactersIgnoringModifiers: "d", isARepeat: false, keyCode: 2)!
+            require(NSApp.mainMenu?.performKeyEquivalent(with: draftsShortcut) == true, "Command-D activates the drafts menu action")
+            await settle()
+            require(model.showDrafts, "Command-D opens the drawer")
+            let savedDraft = model.drafts.first(where: { $0.id == model.draft.id })!
+            await clickHeader(at: window.contentView!.bounds.width - 46)
+            require(model.showDrafts && !model.draft.hasContent, "new post link creates a draft and keeps drawer open")
+            require(model.activeEditor === window.firstResponder, "new post link focuses the new editor")
+            model.load(savedDraft)
+            await settle()
+            require(model.showDrafts && model.draft.posts[0].text == "First post", "switching drafts keeps drawer open")
+            require(model.activeEditor === window.firstResponder, "restored draft receives editor focus")
+            window.setContentSize(NSSize(width: 1000, height: window.contentView!.bounds.height))
+            window.delegate?.windowDidEndLiveResize?(Notification(name: NSWindow.didEndLiveResizeNotification, object: window))
+            await settle()
+            require(NSApp.mainMenu?.performKeyEquivalent(with: draftsShortcut) == true, "Command-D works with drawer open")
+            await settle()
+            require(!model.showDrafts, "Command-D closes the drawer")
+            require(abs(window.frame.width - (1000 - ComposerWindowSizing.drawerWidth)) < 1, "closing respects resizing while drawer is open")
             require(model.save(), "edited content persists")
             try? FileManager.default.removeItem(at: model.storage.directory)
-            print("Passed \(checks) native UI checks: avatar, focus, typing, undo/redo, window growth and cap, caret visibility, threads, and persistence.")
+            print("Passed \(checks) native UI checks: avatar, focus, typing, undo/redo, drafts drawer, window growth and cap, caret visibility, threads, and persistence.")
             exit(0)
         }
     }
@@ -114,6 +158,18 @@ enum SelfCheck {
         check(fitted.height == 552 && smallScreen.contains(fitted), "growth fits smaller screens")
         let shrunk = ComposerWindowSizing.frame(current: expanded, contentHeight: 200, screen: screen)
         check(shrunk.height == 332 && shrunk.maxY == expanded.maxY, "shrinking preserves the top edge and minimum height")
+        let drawerFrame = ComposerWindowSizing.frame(current: frame, composerWidth: frame.width, showingDrafts: true, screen: screen)
+        check(drawerFrame.width == frame.width + ComposerWindowSizing.drawerWidth && drawerFrame.origin == frame.origin &&
+              drawerFrame.height == frame.height, "drawer expands to the right without changing composer size")
+        let edgeFrame = NSRect(x: 800, y: 500, width: 600, height: 332)
+        let edgeDrawer = ComposerWindowSizing.frame(current: edgeFrame, composerWidth: edgeFrame.width, showingDrafts: true, screen: screen)
+        check(screen.contains(edgeDrawer) && edgeDrawer.maxX == screen.maxX, "drawer shifts window left at the screen edge")
+        let constrainedScreen = NSRect(x: -1024, y: 0, width: 1024, height: 1000)
+        let wideFrame = NSRect(x: -1000, y: 500, width: 800, height: 332)
+        let constrainedDrawer = ComposerWindowSizing.frame(current: wideFrame, composerWidth: wideFrame.width, showingDrafts: true, screen: constrainedScreen)
+        check(constrainedScreen.contains(constrainedDrawer), "drawer fits the available screen width on another display")
+        let closedDrawer = ComposerWindowSizing.frame(current: constrainedDrawer, composerWidth: wideFrame.width, showingDrafts: false, screen: constrainedScreen)
+        check(closedDrawer.width == wideFrame.width && closedDrawer.height == wideFrame.height, "closing restores width after screen-constrained expansion")
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("XWriter-check-\(UUID())")
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = DraftStorage(directory: directory)
@@ -128,6 +184,10 @@ enum SelfCheck {
             check(model.save(), "save first draft")
             check(model.drafts.count == 1, "saved draft appears in library")
             model.draft.posts[0].text = "Revised draft"
+            model.toggleDrafts()
+            check(model.showDrafts && model.drafts.first?.posts[0].text == "Revised draft", "opening drawer saves pending edits")
+            model.toggleDrafts()
+            check(!model.showDrafts, "drawer toggle closes an open drawer")
             check(model.save() && model.drafts.count == 1, "saving updates without duplication")
             let restored = ComposerModel(directory: directory)
             check(restored.draft.posts[0].text == "Revised draft", "restore text")
@@ -136,12 +196,15 @@ enum SelfCheck {
             check(model.draft.posts.count == 2 && !model.canPost, "empty thread post prevents handoff")
             model.draft.posts[1].text = "Second post"
             check(model.canPost, "completed thread allows handoff")
+            model.toggleDrafts()
             model.newDraft()
             check(!model.draft.hasContent && model.drafts.count == 1, "new draft preserves old draft")
+            check(model.showDrafts, "creating a draft keeps drawer open")
             model.draft.posts[0].text = "Another draft"
             check(model.save() && model.drafts.count == 2, "multiple saved drafts")
             model.load(model.drafts.first(where: { $0.id == firstID })!)
             check(model.draft.posts.count == 2 && model.draft.posts[1].text == "Second post", "restore thread")
+            check(model.showDrafts, "loading a draft keeps drawer open")
             model.removePost(model.draft.posts[1].id)
             check(model.draft.posts.count == 1 && model.activePostID == model.draft.posts[0].id, "remove thread post")
             model.draft.posts[0].attachments = [Attachment(name: "test.png", data: Data([1, 2, 3]), alt: "An image")]

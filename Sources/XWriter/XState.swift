@@ -95,7 +95,11 @@ final class ComposerModel: ObservableObject {
     @Published var draft: Draft { didSet { queueSave() } }
     @Published var drafts: [Draft]
     @Published var activePostID: UUID
-    @Published var showDrafts = false
+    @Published var showDrafts = false {
+        didSet {
+            if showDrafts != oldValue { onDraftsVisibilityChange?(showDrafts) }
+        }
+    }
     @Published var showHandoff = false
     @Published var error: String?
     @Published var toast: String?
@@ -109,6 +113,7 @@ final class ComposerModel: ObservableObject {
     private var canSave = true
     weak var activeEditor: ComposerTextView?
     var onContentHeightChange: ((CGFloat) -> Void)?
+    var onDraftsVisibilityChange: ((Bool) -> Void)?
 
     init(directory: URL? = nil) {
         let base = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -162,6 +167,11 @@ final class ComposerModel: ObservableObject {
         }
     }
 
+    func toggleDrafts() {
+        if !showDrafts { _ = save() }
+        showDrafts.toggle()
+    }
+
     func newDraft() {
         guard save() else { return }
         draft = Draft()
@@ -173,7 +183,6 @@ final class ComposerModel: ObservableObject {
         // Use the newest version if the currently edited draft was selected.
         draft = drafts.first(where: { $0.id == item.id }) ?? item
         activePostID = draft.posts[0].id
-        showDrafts = false
     }
 
     func deleteDraft(_ id: UUID) {

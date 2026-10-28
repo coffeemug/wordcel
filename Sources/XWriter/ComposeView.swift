@@ -8,6 +8,25 @@ struct ComposeView: View {
     @ViewState<Bool> private var dropTarget = false
 
     var body: some View {
+        HStack(spacing: 0) {
+            composer.frame(minWidth: ComposerWindowSizing.minimumWidth)
+            if model.showDrafts {
+                DraftsView(model: model)
+                    .frame(width: ComposerWindowSizing.drawerWidth)
+                    .overlay(alignment: .leading) { Rectangle().fill(Theme.border).frame(width: 1) }
+            }
+        }
+        .foregroundStyle(Theme.foreground)
+        .background(Theme.background)
+        .sheet(isPresented: $model.showHandoff) { HandoffView(model: model) }
+        .alert("Something needs attention", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
+            Button("OK") { model.error = nil }
+        } message: { Text(model.error ?? "") }
+        .frame(minWidth: ComposerWindowSizing.minimumWidth + (model.showDrafts ? ComposerWindowSizing.drawerWidth : 0), minHeight: 300)
+        .ignoresSafeArea()
+    }
+
+    private var composer: some View {
         VStack(spacing: 0) {
             header.measuringComposerHeight()
             ScrollViewReader { proxy in
@@ -66,13 +85,6 @@ struct ComposeView: View {
             }
             return !providers.isEmpty
         }
-        .sheet(isPresented: $model.showDrafts) { DraftsView(model: model) }
-        .sheet(isPresented: $model.showHandoff) { HandoffView(model: model) }
-        .alert("Something needs attention", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
-            Button("OK") { model.error = nil }
-        } message: { Text(model.error ?? "") }
-        .frame(minWidth: 560, minHeight: 300)
-        .ignoresSafeArea()
     }
 
     private var header: some View {
@@ -81,10 +93,13 @@ struct ComposeView: View {
                 .buttonStyle(RoundButtonStyle()).help("Close • your draft is saved automatically")
                 .accessibilityLabel("Close composer")
             Spacer()
-            Button("Drafts") { _ = model.save(); model.showDrafts = true }
-                .font(.system(size: 14, weight: .bold)).foregroundStyle(Theme.blue)
-                .buttonStyle(.plain).padding(.horizontal, 13).padding(.vertical, 9)
-                .contentShape(Capsule()).help("Saved drafts (⌘D)")
+            Button { model.toggleDrafts() } label: { ComposerIcon(kind: .drawer, size: 22) }
+                .foregroundStyle(Theme.blue).buttonStyle(RoundButtonStyle(blue: true))
+                .background(Theme.blue.opacity(model.showDrafts ? 0.1 : 0), in: Circle())
+                .help(model.showDrafts ? "Hide drafts (⌘D)" : "Show drafts (⌘D)")
+                .accessibilityLabel("Toggle drafts")
+                .accessibilityValue(model.showDrafts ? "Expanded" : "Collapsed")
+                .accessibilityIdentifier("toggle-drafts")
         }
         .padding(.horizontal, 8).frame(height: 52)
         .background(WindowDragArea())

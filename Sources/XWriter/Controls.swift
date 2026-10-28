@@ -173,65 +173,59 @@ struct PlanPicker: View {
 
 struct DraftsView: View {
     @ObservedObject var model: ComposerModel
-    @ViewState<String> private var search = ""
     @ViewState<Draft?> private var deleting = nil
-    private var filtered: [Draft] {
-        model.drafts.filter { search.isEmpty || $0.posts.contains { $0.text.localizedCaseInsensitiveContains(search) } }
-    }
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Button { model.showDrafts = false } label: { ComposerIcon(kind: .close) }.buttonStyle(RoundButtonStyle())
-                    .accessibilityLabel("Close drafts")
-                Text("Unsent posts").font(.system(size: 20, weight: .bold))
                 Spacer()
-                Button("New post") { model.newDraft(); model.showDrafts = false }.buttonStyle(PillButtonStyle())
-            }.padding(12)
-            HStack {
-                Image(systemName: "magnifyingglass").foregroundStyle(Theme.secondary)
-                TextField("Search drafts", text: $search).textFieldStyle(.plain).font(.system(size: 14))
-            }.padding(12).background(Theme.hover, in: Capsule()).padding(.horizontal, 20).padding(.bottom, 12)
+                Button("New post") { model.newDraft() }
+                    .font(.system(size: 14, weight: .semibold)).foregroundStyle(Theme.blue)
+                    .buttonStyle(.plain).padding(.vertical, 9).help("New post (⌘N)")
+            }.padding(.horizontal, 16).frame(height: 52)
             Rectangle().fill(Theme.border).frame(height: 1)
-            if filtered.isEmpty {
+            if model.drafts.isEmpty {
                 VStack(alignment: .leading, spacing: 10) {
-                    Text(search.isEmpty ? "Save it for later" : "No drafts found").font(.system(size: 28, weight: .heavy))
-                    Text(search.isEmpty ? "Your writing is saved automatically.\nCome back whenever you're ready." : "Try searching for something else.")
+                    Text("Save it for later").font(.system(size: 24, weight: .heavy))
+                    Text("Your writing is saved automatically.\nCome back whenever you're ready.")
                         .font(.system(size: 15)).foregroundStyle(Theme.secondary)
-                }.frame(maxWidth: .infinity, maxHeight: .infinity)
+                }.padding(24).frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
                     LazyVStack(spacing: 0) {
-                        ForEach(filtered) { item in
+                        ForEach(model.drafts) { item in
                             HStack(alignment: .top, spacing: 12) {
                                 Button { model.load(item) } label: {
-                                    HStack(alignment: .top, spacing: 12) {
-                                        AvatarView(image: model.avatar)
-                                        VStack(alignment: .leading, spacing: 8) {
-                                            HStack {
-                                                Text(item.id == model.draft.id ? "Current draft" : "Draft").fontWeight(.bold)
-                                                Text(item.modified, style: .date).foregroundStyle(Theme.secondary)
-                                            }.font(.system(size: 12))
-                                            Text(item.title).font(.system(size: 15)).lineLimit(3).multilineTextAlignment(.leading)
+                                    VStack(alignment: .leading, spacing: 8) {
+                                        HStack {
+                                            Text(item.id == model.draft.id ? "Current draft" : "Draft").fontWeight(.bold)
+                                            Text(item.modified, style: .date).foregroundStyle(Theme.secondary)
+                                        }.font(.system(size: 12))
+                                        Text(item.title).font(.system(size: 15)).lineLimit(3).multilineTextAlignment(.leading)
+                                        VStack(alignment: .leading, spacing: 6) {
                                             HStack(spacing: 10) {
                                                 if item.posts.count > 1 { Label("\(item.posts.count) posts", systemImage: "text.bubble") }
                                                 let imageCount = item.posts.reduce(0) { $0 + $1.attachments.count }
                                                 if imageCount > 0 { Label("\(imageCount)", systemImage: "photo") }
-                                                if let date = item.plannedDate { Label(date.formatted(date: .abbreviated, time: .shortened), systemImage: "calendar") }
-                                            }.font(.system(size: 11)).foregroundStyle(Theme.secondary)
-                                        }.frame(maxWidth: .infinity, alignment: .leading)
-                                    }.contentShape(Rectangle())
+                                            }
+                                            if let date = item.plannedDate { Label(date.formatted(date: .abbreviated, time: .shortened), systemImage: "calendar") }
+                                        }.font(.system(size: 11)).foregroundStyle(Theme.secondary)
+                                    }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
                                 }.buttonStyle(.plain)
                                 Button { deleting = item } label: { Image(systemName: "trash").font(.system(size: 14)) }
                                     .buttonStyle(RoundButtonStyle()).foregroundStyle(Theme.secondary).help("Delete draft")
                                     .accessibilityLabel("Delete draft")
-                            }.padding(20)
+                            }.padding(16)
+                                .background(item.id == model.draft.id ? Theme.blue.opacity(0.06) : .clear)
                             Rectangle().fill(Theme.border).frame(height: 1)
                         }
                     }
                 }
             }
         }
-        .frame(width: 560, height: 480).background(Theme.background).foregroundStyle(Theme.foreground)
+        .frame(maxHeight: .infinity).background(Theme.background).foregroundStyle(Theme.foreground)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Drafts")
+        .accessibilityIdentifier("drafts-drawer")
         .alert("Delete this draft?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })) {
             Button("Cancel", role: .cancel) { deleting = nil }
             Button("Delete", role: .destructive) { if let item = deleting { model.deleteDraft(item.id) }; deleting = nil }
