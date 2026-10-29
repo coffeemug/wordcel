@@ -3,11 +3,12 @@ import SwiftUI
 struct SynonymEchoArea: View {
     @ObservedObject var controller: SynonymController
     let buffer: EchoBuffer
+    var status: String?
     static let resultsHeight: CGFloat = 48
 
     var body: some View {
-        if controller.state == .idle {
-            EchoArea(buffer: buffer, leadingInset: ComposerWindowSizing.textLeading)
+        if controller.state == .idle || status != nil {
+            EchoArea(buffer: buffer, leadingInset: ComposerWindowSizing.textLeading, status: status)
         } else {
             VStack(spacing: 0) {
                 Rectangle().fill(Theme.border).frame(height: 1)

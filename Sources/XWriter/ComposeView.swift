@@ -4,12 +4,14 @@ import SwiftUI
 struct ComposeView: View {
     @ObservedObject var model: ComposerModel
     @ObservedObject private var synonyms: SynonymController
+    @ObservedObject private var prompts: PromptController
     @ViewState<Bool> private var modelPopover = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(model: ComposerModel) {
         self.model = model
         synonyms = model.synonyms
+        prompts = model.prompts
     }
 
     var body: some View {
@@ -29,7 +31,7 @@ struct ComposeView: View {
                 toolbar.frame(width: model.composerWidth)
                     .background(Theme.background)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                SynonymEchoArea(controller: synonyms, buffer: model.echo)
+                SynonymEchoArea(controller: synonyms, buffer: model.echo, status: prompts.status)
             }
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.16), value: synonyms.hasResults)
         }

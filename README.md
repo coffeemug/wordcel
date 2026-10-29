@@ -21,6 +21,7 @@ The build produces an ad-hoc signed `XWriter.app` in the project directory. You 
 - Native text selection, undo/redo, spell checking, and highlighting for links, hashtags, and mentions.
 - A bottom echo area displays errors and status messages instead of message dialogs or floating toasts, without interrupting typing. The next keypress, cursor movement, click, scroll, or menu command clears the message; new messages produced by that action remain visible. Hover to read a long message in full. Settings has no echo area. Deleting a draft in the drawer asks `(y/n)` here and takes focus away from the editor: **Y** confirms; **N** or **Esc** cancels and returns focus to the editor. Other keys only blink the question, without editing text or running shortcuts. Clicking the editor also cancels the question and resumes editing. Other destructive actions still use their existing confirmations.
 - On-demand Claude synonyms grouped by Latin and Germanic roots, with click-to-replace suggestions.
+- **Ctrl-Enter** opens a `> ` minibuffer input for a freeform prompt. **Enter** sends it to the selected model with the exact selected text, or the cursor's word if nothing is selected. With no cursor word, it sends just the prompt. The model is asked for a short, plain-text reply, shown as a minibuffer message. **Esc** cancels input or a pending request; you can keep editing the post while waiting.
 - Configurable prompt buttons highlight text using Claude. Add, remove, rename, reorder, and customize their icons and prompts in Settings (⌘,).
 - Automatic local draft saving, restoration, and deletion in a right-side drawer. The drawer icon widens the window to keep the composer alongside your drafts. Closing the window keeps the draft; clicking the Dock icon reopens it.
 - The build bundles `me.png` as your default avatar. Custom profile photo: click the avatar or use View → Choose Profile Photo.
@@ -66,6 +67,7 @@ Claude returns exact quoted spans and occurrence numbers, which the app validate
 | ⌘D | Toggle the drafts drawer |
 | ⌘Return | Review for publishing on X |
 | ⌃Space | Find single-word alternatives for the word at the cursor or selected phrase |
+| ⌃Return | Enter a freeform model prompt in the minibuffer |
 | ⌘, | Configure toolbar buttons in Settings |
 | ⌘⇧D | Toggle light/dark appearance |
 | ⌘W | Close the current window |
@@ -85,7 +87,7 @@ Drafts are written atomically to `~/Library/Application Support/XWriter/drafts.j
 
 The model checks cover weighted counts, Unicode and URL handling, post validation, draft round trips, editing without duplication, thread restoration, retired-data migration, deletion, corrupt-file protection, synonym targeting, interval tracking, toolbar persistence, and response validation. The native UI checks also exercise Settings, exclusive highlighting toggles, edits during requests, synonym shortcuts, cancellation, replacement and undo, simulated sign-in, and subprocess timeouts. Checks use synthetic Claude responses and never sign in or send your drafts to Claude.
 
-Add `--synonyms-only` to `--ui-test` for focused composer and synonym-overlay checks. On unattended desktops where macOS refuses app activation, `--skip-activation-check` explicitly skips and reports the two app-switch checks.
+Add `--synonyms-only` to `--ui-test` for focused composer, minibuffer-prompt, and synonym-overlay checks; add `--with-cli-checks` to include the isolated CLI checks without the Settings suite. On unattended desktops where macOS refuses app activation, `--skip-activation-check` explicitly skips and reports the two app-switch checks.
 
 To render isolated previews without modifying your drafts:
 

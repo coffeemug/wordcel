@@ -70,13 +70,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let isolatedDirectory = isTesting ? FileManager.default.temporaryDirectory.appendingPathComponent("XWriter-preview-\(UUID())") : nil
         let previewSynonyms = isTesting ? SelfCheck.SynonymStub() : nil
         let previewHighlights = isTesting ? SelfCheck.HighlightStub() : nil
+        let previewPrompts = isTesting ? SelfCheck.PromptStub() : nil
         if isTesting && CommandLine.arguments.contains("--loading") {
             previewSynonyms?.delay = .seconds(10)
             previewHighlights?.delay = .seconds(10)
+            previewPrompts?.delay = .seconds(10)
         }
         let preferences = isolatedDirectory.map { SelfCheck.preferences(for: $0) } ?? .standard
         model = ComposerModel(directory: isolatedDirectory, synonymService: previewSynonyms,
-                              highlightService: previewHighlights, preferences: preferences)
+                              highlightService: previewHighlights, promptService: previewPrompts, preferences: preferences)
         model.onShowSettings = { [weak self] in self?.showSettings() }
         if CommandLine.arguments.contains("--demo") {
             model.draft.posts[0].text = "A little less scrolling. A little more writing.\n\nMade for the moments when you have something to say. ✨"
@@ -136,6 +138,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         inputMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel, .beginGesture]) { [weak self] event in
             guard let self else { return event }
+            if self.model.echo.readsText, event.window === self.window {
+                if event.type == .keyDown {
+                    if event.keyCode == 53 { self.model.echo.clear(); return nil }
+                    return event
+                }
+                if let field = self.model.echo.textField,
+                   field.bounds.contains(field.convert(event.locationInWindow, from: nil)) {
+                    return event
+                }
+            }
             if event.type == .keyDown, event.window === self.window, self.model.echo.expectsInput {
                 if event.keyCode == 53 {
                     self.model.echo.clear()
@@ -150,16 +162,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             let hadMessage = self.model.echo.message != nil
             self.model.echo.clear()
             guard event.type == .keyDown, event.window === self.window else { return event }
+            if (event.keyCode == 36 || event.keyCode == 76),
+               event.modifierFlags.intersection([.command, .control, .option, .shift]) == .control {
+                if !event.isARepeat { self.model.readPrompt() }
+                return nil
+            }
             // AppKit otherwise matches the retired thread shortcut to Command-Return's publishing action.
             if event.keyCode == 36 && event.modifierFlags.intersection([.command, .control, .option, .shift]) == [.command, .shift] {
                 return nil
             }
-            guard event.keyCode == 53, hadMessage || self.model.synonyms.state != .idle else { return event }
+            guard event.keyCode == 53, hadMessage || self.model.synonyms.state != .idle || self.model.prompts.state != .idle else { return event }
             if self.model.synonyms.state != .idle { self.model.synonyms.dismiss() }
+            self.model.prompts.dismiss()
             return nil
         }
-        menuActionObserver = NotificationCenter.default.addObserver(forName: NSMenu.willSendActionNotification, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.model.echo.clear() }
+        menuActionObserver = NotificationCenter.default.addObserver(forName: NSMenu.willSendActionNotification, object: nil, queue: .main) { [weak self] notification in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                if self.model.echo.readsText, let item = notification.userInfo?["MenuItem"] as? NSMenuItem,
+                   let action = item.action, ["undo:", "redo:", "cut:", "copy:", "paste:", "selectAll:"].contains(NSStringFromSelector(action)) {
+                    return
+                }
+                self.model.echo.clear()
+            }
         }
         NSApp.activate(ignoringOtherApps: true)
         if isTesting && CommandLine.arguments.contains("--drafts") { model.toggleDrafts() }
@@ -183,9 +208,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if snapshotPath != nil {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in self?.captureSnapshot() }
         }
-        if CommandLine.arguments.contains("--ui-test"), let previewSynonyms, let previewHighlights {
+        if CommandLine.arguments.contains("--ui-test"), let previewSynonyms, let previewHighlights, let previewPrompts {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                SelfCheck.interface(model: self.model, window: self.window, synonymService: previewSynonyms, highlightService: previewHighlights)
+                SelfCheck.interface(model: self.model, window: self.window, synonymService: previewSynonyms,
+                                    highlightService: previewHighlights, promptService: previewPrompts)
             }
         }
     }
@@ -260,10 +286,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         scheduleResize(to: contentHeight)
     }
     func windowDidChangeScreen(_ notification: Notification) { scheduleResize(to: contentHeight) }
-    func windowShouldClose(_ sender: NSWindow) -> Bool { model.synonyms.dismiss(); model.highlights.dismiss(); return model.save() }
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        model.echo.clear(); model.prompts.dismiss(); model.synonyms.dismiss(); model.highlights.dismiss()
+        return model.save()
+    }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         model?.synonyms.dismiss()
         model?.highlights.dismiss()
+        model?.prompts.dismiss()
         guard model != nil, !model.save() else { return .terminateNow }
         let alert = NSAlert()
         alert.messageText = "Your latest changes couldn't be saved."
@@ -313,6 +343,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         item("Select All", action: #selector(NSText.selectAll(_:)), key: "a", in: edit, responder: true)
         edit.addItem(.separator())
         item("Find Synonyms", action: #selector(findSynonyms), key: " ", modifiers: .control, in: edit)
+        item("Ask Model…", action: #selector(readPrompt), key: "\r", modifiers: .control, in: edit)
 
         let view = submenu("View", in: menu)
         item("Light", action: #selector(light), in: view)
@@ -357,6 +388,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         model.synonyms.lookup(in: editor, model: model.synonymModel, effort: model.synonymEffort)
     }
     @objc private func post() { model.prepareHandoff() }
+    @objc private func readPrompt() { model.readPrompt() }
     @objc private func close() { NSApp.keyWindow?.performClose(nil) }
     @objc private func showSettings() {
         if settingsWindow == nil {

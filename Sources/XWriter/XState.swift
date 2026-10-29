@@ -105,6 +105,7 @@ final class ComposerModel: ObservableObject {
     let synonyms: SynonymController
     let toolbarSettings: PromptToolbarSettings
     let highlights: HighlightController
+    let prompts: PromptController
     let echo = EchoBuffer()
     private let preferences: UserDefaults
     private var saveWork: DispatchWorkItem?
@@ -115,7 +116,8 @@ final class ComposerModel: ObservableObject {
     var onShowSettings: (() -> Void)?
 
     init(directory: URL? = nil, synonymService: (any SynonymService)? = nil,
-         highlightService: (any HighlightService)? = nil, preferences: UserDefaults = .standard) {
+         highlightService: (any HighlightService)? = nil, promptService: (any PromptService)? = nil,
+         preferences: UserDefaults = .standard) {
         self.preferences = preferences
         let savedModel = preferences.string(forKey: "synonymModel")
         synonymModel = savedModel.flatMap(ClaudeModel.init(rawValue:)) ?? .fable
@@ -127,6 +129,7 @@ final class ComposerModel: ObservableObject {
         let cli = ClaudeCLI(configurationDirectory: base.appendingPathComponent("claude-code"))
         synonyms = SynonymController(service: synonymService ?? cli)
         highlights = HighlightController(service: highlightService ?? cli)
+        prompts = PromptController(service: promptService ?? cli)
         toolbarSettings = PromptToolbarSettings(preferences: preferences, echo: echo)
         var initial = DraftArchive()
         var readError: String?
@@ -149,7 +152,8 @@ final class ComposerModel: ObservableObject {
             ?? Bundle.main.url(forResource: "me", withExtension: "png").flatMap { NSImage(contentsOf: $0) }
             ?? NSImage(contentsOfFile: "me.png")
         echo.message = readError ?? toolbarSettings.error
-        echo.onMessage = { [weak self] in self?.synonyms.dismiss() }
+        echo.onMessage = { [weak self] in self?.synonyms.dismiss(); self?.prompts.dismiss() }
+        prompts.onMessage = { [weak self] message in self?.notify(message) }
         synonyms.onError = { [weak self] message in self?.notify(message) }
         highlights.onError = { [weak self] message in self?.notify(message) }
         highlights.onNotice = { [weak self] message in self?.notify(message) }
@@ -158,6 +162,18 @@ final class ComposerModel: ObservableObject {
 
     var activeIndex: Int { draft.posts.firstIndex(where: { $0.id == activePostID }) ?? 0 }
     var canPost: Bool { draft.posts.allSatisfy(\.valid) }
+
+    func readPrompt() {
+        guard let editor = activeEditor, editor.window != nil, !editor.hasMarkedText() else {
+            notify("Place the cursor in a post before entering a prompt.")
+            return
+        }
+        let text = PromptController.context(text: editor.string, selection: editor.selectedRange())
+        echo.read { [weak self] prompt in
+            guard let self else { return }
+            prompts.send(prompt, text: text, model: synonymModel, effort: synonymEffort)
+        }
+    }
 
     func toggleHighlights(_ button: PromptButton) {
         guard let editor = activeEditor, editor.window != nil else {

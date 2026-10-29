@@ -34,14 +34,7 @@ struct SynonymTarget {
 
     static func capture(text: String, selection: NSRange) -> SynonymTarget? {
         guard let selectedRange = Range(selection, in: text) else { return nil }
-        let tokenizer = NLTokenizer(unit: .word)
-        tokenizer.string = text
-        let words = tokenizer.tokens(for: text.startIndex..<text.endIndex)
-            .filter { text[$0].unicodeScalars.contains(where: CharacterSet.letters.contains) }
-            .map { NSRange($0, in: text) }
-        let range = words.first { $0.location <= selection.location && selection.location < NSMaxRange($0) && NSMaxRange(selection) <= NSMaxRange($0) }
-            ?? words.first { selection.length == 0 && NSMaxRange($0) == selection.location }
-        if let range {
+        if let range = wordRange(text: text, selection: selection) {
             guard range.length <= 100 else { return nil }
             return SynonymTarget(text: text, range: range)
         }
@@ -49,6 +42,16 @@ struct SynonymTarget {
         guard phrase.unicodeScalars.contains(where: CharacterSet.letters.contains) else { return nil }
         let phraseRange = (text as NSString).range(of: phrase, options: .literal, range: selection)
         return SynonymTarget(text: text, range: phraseRange)
+    }
+
+    static func wordRange(text: String, selection: NSRange) -> NSRange? {
+        let tokenizer = NLTokenizer(unit: .word)
+        tokenizer.string = text
+        let words = tokenizer.tokens(for: text.startIndex..<text.endIndex)
+            .filter { text[$0].unicodeScalars.contains(where: CharacterSet.letters.contains) }
+            .map { NSRange($0, in: text) }
+        return words.first { $0.location <= selection.location && selection.location < NSMaxRange($0) && NSMaxRange(selection) <= NSMaxRange($0) }
+            ?? words.first { selection.length == 0 && NSMaxRange($0) == selection.location }
     }
 
     func matches(text: String, selection: NSRange) -> Bool {

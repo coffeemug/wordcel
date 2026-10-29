@@ -63,7 +63,31 @@ enum SelfCheck {
         }
     }
 
-    @MainActor static func interface(model: ComposerModel, window: NSWindow, synonymService: SynonymStub, highlightService: HighlightStub) {
+    @MainActor final class PromptStub: PromptService {
+        var authenticated = true
+        var signIns = 0
+        var prompts: [String] = []
+        var texts: [String?] = []
+        var models: [ClaudeModel] = []
+        var efforts: [ClaudeEffort] = []
+        var delay = Duration.milliseconds(100)
+        var ignoreCancellation = false
+        var failure: Error?
+        var result = "A brief answer."
+        func isAuthenticated() async throws -> Bool { authenticated }
+        func signIn() async throws { signIns += 1; authenticated = true }
+        func reply(to prompt: String, text: String?, model: ClaudeModel, effort: ClaudeEffort) async throws -> String {
+            prompts.append(prompt); texts.append(text); models.append(model); efforts.append(effort)
+            let answer = result
+            do { try await Task.sleep(for: delay) }
+            catch is CancellationError { if !ignoreCancellation { throw CancellationError() } }
+            if let failure { throw failure }
+            return answer
+        }
+    }
+
+    @MainActor static func interface(model: ComposerModel, window: NSWindow, synonymService: SynonymStub,
+                                    highlightService: HighlightStub, promptService: PromptStub) {
         Task { @MainActor in
             var checks = 0
             func require(_ condition: @autoclosure () -> Bool, _ name: String) {
@@ -247,17 +271,20 @@ enum SelfCheck {
             await settle()
             require(!model.showDrafts, "Command-D closes the drawer")
             require(abs(window.frame.width - (1000 - ComposerWindowSizing.drawerWidth)) < 1, "closing respects resizing while drawer is open")
+            await promptInterface(model: model, window: window, service: promptService) { require($0, $1) }
             await synonymInterface(model: model, window: window, service: synonymService) { require($0, $1) }
             let synonymsOnly = CommandLine.arguments.contains("--synonyms-only")
             if !synonymsOnly {
                 await highlightInterface(model: model, window: window, service: highlightService) { require($0, $1) }
+            }
+            if !synonymsOnly || CommandLine.arguments.contains("--with-cli-checks") {
                 await commandChecks { require($0, $1) }
             }
             require(model.save(), "edited content persists")
             UserDefaults.standard.removePersistentDomain(forName: model.storage.directory.lastPathComponent)
             try? FileManager.default.removeItem(at: model.storage.directory)
-            let coverage = synonymsOnly ? "editing, drafts drawer, sizing, synonym overlay, and persistence" :
-                "editing, drafts drawer, sizing, synonyms, highlights, settings, CLI lifecycle, focus, and persistence"
+            let coverage = synonymsOnly ? "editing, drafts drawer, sizing, minibuffer prompts, synonym overlay, and persistence" :
+                "editing, drafts drawer, sizing, minibuffer prompts, synonyms, highlights, settings, CLI lifecycle, focus, and persistence"
             print("Passed \(checks) native UI checks: \(coverage).")
             exit(0)
         }
@@ -303,6 +330,14 @@ enum SelfCheck {
         let helpRange = (targetText as NSString).range(of: "Help")
         let target = SynonymTarget.capture(text: targetText, selection: NSRange(location: helpRange.location + 2, length: 0))
         check(target?.query == "Help" && target?.range == helpRange, "synonyms target the word under a UTF-16 cursor")
+        check(PromptController.context(text: targetText, selection: NSRange(location: helpRange.location + 2, length: 0)) == "Help",
+              "model prompts capture the word at a Unicode-aware cursor")
+        check(PromptController.context(text: targetText, selection: NSRange(location: helpRange.location + 1, length: 2)) == "el",
+              "model prompts send an exact partial-word selection rather than expanding it")
+        check(PromptController.context(text: "  😀 123\n", selection: NSRange(location: 0, length: 9)) == "  😀 123\n" &&
+              PromptController.context(text: "", selection: NSRange(location: 0, length: 0)) == nil &&
+              PromptController.context(text: targetText, selection: NSRange(location: 8, length: 0)) == nil,
+              "model prompts preserve arbitrary selected text and omit context when there is no cursor word")
         check(target?.matches(text: targetText, selection: NSRange(location: helpRange.location, length: 0)) == true &&
               target?.matches(text: targetText, selection: NSRange(location: NSMaxRange(helpRange), length: 0)) == true &&
               target?.matches(text: targetText, selection: helpRange) == true,
@@ -349,6 +384,20 @@ enum SelfCheck {
             check(target?.query == "update" && target?.sentence == expected, "lookup extracts only the target sentence: \(expected)")
         }
         do {
+            let reply = try ClaudeCLI.decodePrompt(.init(status: 0, output: Data(#"{"type":"result","is_error":false,"structured_output":{"answer":" A short reply. "}}"#.utf8)))
+            check(reply == "A short reply.",
+                  "model replies decode structured output and trim surrounding whitespace")
+            for invalid in [
+                #"{"type":"result","is_error":false,"structured_output":{"answer":" \n "}}"#,
+                #"{"type":"result","is_error":false,"structured_output":{"answer":123}}"#,
+                #"{"type":"result","is_error":false,"result":"Missing structured output"}"#,
+                #"{"type":"result","is_error":true,"result":"Usage limit reached"}"#
+            ] {
+                do {
+                    _ = try ClaudeCLI.decodePrompt(.init(status: 0, output: Data(invalid.utf8)))
+                    check(false, "invalid model replies must fail")
+                } catch { check(true, "invalid model replies are surfaced") }
+            }
             let response = ClaudeCommand.Result(status: 0, output: Data(#"{"type":"result","is_error":false,"structured_output":{"latin":["assist"],"germanic":["back"]}}"#.utf8))
             let lists = try ClaudeCLI.decode(response)
             check(lists.latin == ["assist"] && lists.germanic == ["back"], "Claude structured synonym output is decoded")
@@ -632,6 +681,134 @@ enum SelfCheck {
             unreadable.reset()
             check(!unreadable.isReadOnly && PromptToolbarSettings(preferences: defaults).buttons.count == 2, "explicit reset repairs toolbar settings")
         } catch { check(false, "highlight model check failed: \(error)") }
+    }
+
+    @MainActor private static func promptInterface(model: ComposerModel, window: NSWindow, service: PromptStub,
+                                                   check: (Bool, String) -> Void) async {
+        func settle() async { try? await Task.sleep(for: .milliseconds(350)) }
+        func press(_ text: String, code: UInt16, modifiers: NSEvent.ModifierFlags = [], delay: Duration = .milliseconds(100)) async {
+            let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers,
+                                        timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                                        context: nil, characters: text, charactersIgnoringModifiers: text, isARepeat: false, keyCode: code)!
+            NSApp.postEvent(event, atStart: false)
+            try? await Task.sleep(for: delay)
+        }
+        func begin(_ text: String) async {
+            await press("\r", code: 36, modifiers: .control)
+            guard let input = model.echo.textField?.currentEditor() as? NSTextView else {
+                check(false, "minibuffer has a native text editor")
+                return
+            }
+            input.insertText(text, replacementRange: input.selectedRange())
+        }
+        func click(_ point: NSPoint) async {
+            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
+                                              timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                                              context: nil, eventNumber: 0, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0)!
+                NSApp.postEvent(event, atStart: false)
+            }
+            await settle()
+        }
+        model.newDraft()
+        await settle()
+        guard let editor = model.activeEditor else { check(false, "prompt command has a post editor"); return }
+        let source = "😀 A little help goes a long way."
+        editor.insertText(source, replacementRange: NSRange(location: NSNotFound, length: 0))
+        let word = (source as NSString).range(of: "help")
+        let selection = NSRange(location: word.location + 1, length: 2)
+        editor.setSelectedRange(selection)
+        await settle()
+        let frame = window.frame
+        let editorFrame = editor.convert(editor.bounds, to: nil)
+        await begin("")
+        check(model.echo.readsText && model.echo.message == "> " && model.echo.textField?.currentEditor() === window.firstResponder &&
+              window.firstResponder !== editor && !model.showHandoff && window.frame == frame &&
+              editor.convert(editor.bounds, to: nil) == editorFrame,
+              "Control-Enter opens a focused native minibuffer input without publishing or moving the post")
+        await press("x", code: 7)
+        await press("y", code: 16)
+        await press("\u{7f}", code: 51)
+        check(model.echo.inputText == "x" && editor.string == source && editor.selectedRange() == selection,
+              "typing and backspace edit only the minibuffer, including Y/N characters")
+        await press("\u{1b}", code: 53)
+        check(!model.echo.expectsInput && model.echo.message == nil && window.firstResponder === editor &&
+              editor.selectedRange() == selection && service.prompts.isEmpty,
+              "Escape cancels freeform input without a model request and restores the post selection")
+
+        await begin("Cancel by clicking")
+        guard let field = model.echo.textField else { check(false, "minibuffer field exists for mouse editing"); return }
+        await click(field.convert(NSPoint(x: 12, y: field.bounds.midY), to: nil))
+        check(model.echo.readsText && model.echo.inputText == "Cancel by clicking" && field.currentEditor() === window.firstResponder,
+              "clicking within the minibuffer edits its input instead of dismissing it")
+        await click(editor.convert(NSPoint(x: 12, y: 12), to: nil))
+        check(!model.echo.expectsInput && model.echo.message == nil && window.firstResponder === editor && service.prompts.isEmpty,
+              "clicking the post cancels freeform input without invoking the model")
+        editor.setSelectedRange(selection)
+        await begin("Replace this")
+        await press("a", code: 0, modifiers: .command)
+        guard let input = model.echo.textField?.currentEditor() as? NSTextView else { check(false, "prompt remains editable after Command-A"); return }
+        check(input.selectedRange().length == ("Replace this" as NSString).length && model.echo.readsText,
+              "native text editing menu commands do not dismiss the prompt")
+        input.insertText("Explain this", replacementRange: input.selectedRange())
+        service.delay = .milliseconds(600)
+        await press("\r", code: 36)
+        check(model.prompts.state == .loading && !model.echo.expectsInput && window.firstResponder === editor &&
+              service.prompts == ["Explain this"] && service.texts == ["el"] &&
+              service.models == [model.synonymModel] && service.efforts == [model.synonymEffort] && editor.string == source,
+              "Enter submits the exact selection and prompt using the configured model without editing the post")
+        await press("x", code: 7)
+        try? await Task.sleep(for: .milliseconds(600))
+        check(model.echo.message == service.result && model.prompts.state == .idle && window.firstResponder === editor &&
+              editor.string == (source as NSString).replacingCharacters(in: selection, with: "x") &&
+              window.attachedSheet == nil && NSApp.modalWindow == nil,
+              "a concise model reply appears as a message while the post remains editable during the request")
+        editor.insertText(source, replacementRange: NSRange(location: 0, length: (editor.string as NSString).length))
+        editor.setSelectedRange(NSRange(location: word.location + 2, length: 0))
+        service.delay = .milliseconds(100)
+        service.authenticated = false
+        await begin("Define it")
+        await press("\r", code: 36)
+        await settle()
+        check(service.texts.last == "help" && service.signIns == 1 && model.echo.message == service.result,
+              "an unselected cursor sends its word and uses subscription sign-in when needed")
+
+        service.delay = .seconds(1)
+        service.ignoreCancellation = true
+        service.result = "A stale reply"
+        await begin("Old request")
+        await press("\r", code: 36)
+        await begin("New request")
+        await settle()
+        check(model.echo.readsText && model.echo.inputText == "New request" && model.echo.message == "> ",
+              "a new command cancels an older request and stale results cannot replace its input")
+        await press("\u{1b}", code: 53)
+        await begin("Cancel while waiting")
+        await press("\r", code: 36)
+        await press("\u{1b}", code: 53)
+        await settle()
+        check(model.prompts.state == .idle && model.echo.message == nil && window.firstResponder === editor,
+              "Escape also cancels a running prompt and suppresses late replies")
+        service.ignoreCancellation = false
+        service.delay = .milliseconds(100)
+        let requests = service.prompts.count
+        await begin("")
+        await press("\r", code: 36)
+        check(service.prompts.count == requests && model.echo.message == "Type a prompt before pressing Enter.",
+              "an empty command reports an input error without invoking the model")
+        service.failure = ClaudeCLIError.failed("Synthetic prompt failure")
+        await begin("Fail")
+        await press("\r", code: 36)
+        await settle()
+        check(model.echo.message == "Synthetic prompt failure" && model.prompts.state == .idle && window.firstResponder === editor,
+              "model prompt failures appear in the minibuffer without retaining input focus")
+        service.failure = nil
+        editor.insertText("", replacementRange: NSRange(location: 0, length: (editor.string as NSString).length))
+        await begin("Suggest a topic")
+        await press("\r", code: 36)
+        await settle()
+        check(service.texts.last == .some(nil) && model.echo.message == service.result,
+              "a command without a cursor word sends just the prompt")
     }
 
     @MainActor private static func drawerDeletionInterface(model: ComposerModel, window: NSWindow,
@@ -1376,6 +1553,8 @@ enum SelfCheck {
                     printf '%s\\n' "$@" > "$CLAUDE_CONFIG_DIR/arguments.txt"
                     if grep -q '"rule"' "$CLAUDE_CONFIG_DIR/request.json"; then
                         printf '%s' '{"type":"result","is_error":false,"structured_output":{"matches":[{"text":"clear","occurrence":2}]}}'
+                    elif grep -q '"prompt"' "$CLAUDE_CONFIG_DIR/request.json"; then
+                        printf '%s' '{"type":"result","is_error":false,"structured_output":{"answer":"A short response."}}'
                     else
                         printf '%s' '{"type":"result","is_error":false,"structured_output":{"latin":["assist"],"germanic":["back"]}}'
                     fi;;
@@ -1411,6 +1590,21 @@ enum SelfCheck {
                   highlightOptions.contains { $0 == "--effort" && $1 == ClaudeEffort.xhigh.rawValue } &&
                   highlightOptions.contains { $0 == "--json-schema" && $1 == ClaudeCLI.highlightSchema } &&
                   highlightOptions.contains { $0 == "--tools" && $1.isEmpty }, "highlight CLI uses current model, effort, interval schema, and no tools")
+            let prompt = #"Explain "this" briefly."#
+            let selectedText = "😀 selected text\nwith a second line"
+            let reply = try await cli.reply(to: prompt, text: selectedText, model: .haiku, effort: .low)
+            let promptRequest = try JSONDecoder().decode([String: String].self, from: Data(contentsOf: fixture.appendingPathComponent("profile/request.json")))
+            check(reply == "A short response." && promptRequest == ["prompt": prompt, "text": selectedText],
+                  "prompt CLI sends the user's exact request and selected Unicode text as JSON and decodes the reply")
+            let promptArguments = try String(contentsOf: fixture.appendingPathComponent("profile/arguments.txt"), encoding: .utf8)
+            check(promptArguments.contains(ClaudeCLI.promptSystemPrompt) && promptArguments.contains(ClaudeCLI.promptSchema) &&
+                  promptArguments.contains("--model\n\(ClaudeModel.haiku.rawValue)") && promptArguments.contains("--effort\nlow") &&
+                  promptArguments.contains("--tools\n\n") && promptArguments.contains("--no-session-persistence") &&
+                  promptArguments.contains("--strict-mcp-config"),
+                  "prompt CLI requests a short response using the configured model and existing isolated, tool-free invocation")
+            _ = try await cli.reply(to: prompt, text: nil, model: .sonnet, effort: .medium)
+            let noContext = try JSONDecoder().decode([String: String].self, from: Data(contentsOf: fixture.appendingPathComponent("profile/request.json")))
+            check(noContext == ["prompt": prompt], "prompt CLI omits text when the editor has no cursor word")
             let echo = try await ClaudeCommand().run(executable: URL(fileURLWithPath: "/bin/cat"), arguments: [],
                                                      environment: environment, input: #"{"word":"help"}"#, timeout: 5)
             check(echo.status == 0 && String(decoding: echo.output, as: UTF8.self) == #"{"word":"help"}"#, "CLI input and output are piped without a shell")
