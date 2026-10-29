@@ -1067,7 +1067,7 @@ enum SelfCheck {
               "arrow keys within the word preserve synonyms")
         editor.setSelectedRange(target)
         check(model.synonyms.state == ready, "selecting only the target word preserves synonyms")
-        await click(at: NSPoint(x: 55, y: 34))
+        await click(at: NSPoint(x: ComposerWindowSizing.textLeading + 43, y: 34))
         check(editor.string == "😀 Assist, help." && model.draft.posts[0].text == editor.string, "replacement changes only the targeted occurrence")
         check(model.synonyms.state == .idle && window.frame == frame, "replacement collapses the minibuffer without resizing the window")
         editor.undoManager?.undo()
@@ -1079,7 +1079,7 @@ enum SelfCheck {
         editor.keyDown(with: key(" ", code: 49))
         await settle()
         check(service.models.last == .opus && service.efforts.last == .max, "subsequent lookups use the selected model and reasoning")
-        await click(at: NSPoint(x: 55, y: 12))
+        await click(at: NSPoint(x: ComposerWindowSizing.textLeading + 43, y: 12))
         check(editor.string == "😀 Assist, back.", "clicking a Germanic synonym replaces the word")
         editor.setSelectedRange(NSRange(location: (editor.string as NSString).range(of: "back").location + 1, length: 0))
         editor.keyDown(with: key(" ", code: 49))
@@ -1150,7 +1150,7 @@ enum SelfCheck {
         check(model.synonyms.state == ready && service.targets.last == "lend a hand" &&
               service.sentences.last == "😀 Please lend a hand with this, then lend a hand.",
               "selected phrases request single-word alternatives with sentence context")
-        await click(at: NSPoint(x: 55, y: 34))
+        await click(at: NSPoint(x: ComposerWindowSizing.textLeading + 43, y: 34))
         let replacedPhrase = "😀 Please assist with this, then lend a hand. Keep this sentence."
         check(editor.string == replacedPhrase && model.draft.posts[0].text == replacedPhrase,
               "clicking a synonym replaces the whole phrase once and preserves surrounding whitespace")

@@ -7,11 +7,11 @@ struct SynonymEchoArea: View {
 
     var body: some View {
         if controller.state == .idle {
-            EchoArea(buffer: buffer)
+            EchoArea(buffer: buffer, leadingInset: ComposerWindowSizing.textLeading)
         } else {
             VStack(spacing: 0) {
                 Rectangle().fill(Theme.border).frame(height: 1)
-                content.padding(.horizontal, 12)
+                content.padding(.leading, ComposerWindowSizing.textLeading).padding(.trailing, 12)
                     .frame(height: (controller.hasResults ? Self.resultsHeight : ComposerWindowSizing.echoAreaHeight) - 1)
             }
             .background(Theme.background)

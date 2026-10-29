@@ -192,7 +192,7 @@ private struct PromptToolbarButton: View {
                     button.icon.image
                 }
             }
-                .font(.system(size: 19))
+                .font(.system(size: 15.2))
                 .transaction { $0.animation = nil }
                 .foregroundStyle(selected ? Theme.toolbarActive : (hovering ? Theme.toolbarIconHover : Theme.toolbarIcon))
                 .opacity(button.isConfigured ? 1 : 0.4)
