@@ -77,6 +77,10 @@ final class SynonymController: ObservableObject {
     }
 
     @Published private(set) var state = State.idle
+    var hasResults: Bool {
+        if case .ready = state { return true }
+        return false
+    }
     var onError: ((String) -> Void)?
     private let service: any SynonymService
     private var task: Task<Void, Never>?
@@ -120,7 +124,7 @@ final class SynonymController: ObservableObject {
                 state = .ready(lists)
                 task = nil
             } catch is CancellationError {
-                // A newer request or dismissal already restored the toolbar.
+                // A newer request or dismissal already cleared these results.
             } catch {
                 guard requestID == id else { return }
                 dismiss()

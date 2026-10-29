@@ -37,7 +37,7 @@ The character counter approximates X's weighting, including CJK characters, comb
 
 Install the official [Claude Code CLI](https://code.claude.com/docs/en/setup) and use a Claude subscription that includes Claude Code. Put the cursor inside a word (or immediately after it), or highlight a phrase, and press **⌃Space**. A phrase lookup finds single words that capture the whole phrase's meaning. The first lookup opens Claude Code's own browser sign-in flow. XWriter uses a separate CLI profile at `~/Library/Application Support/XWriter/claude-code`; the CLI manages all authentication. XWriter does not read or copy its credentials and does not use API-key billing.
 
-While Claude runs in the background, the toolbar icons become `pulling synonyms...` with cycling dots. Results appear in two rows of up to six context-fitting suggestions: Latin beside a laurel symbol above Germanic beside an oak leaf. Click a synonym to replace the target word or the entire selected phrase, preserving surrounding whitespace. Capitalization and native undo/redo are preserved. Suggestions stay visible when switching apps, toggling the drawer, or moving the cursor within the same word. Press **Esc**, edit the target, or choose a different word or phrase selection to cancel the lookup and restore the icons. Long result rows can be scrolled horizontally.
+While Claude runs in the background, the minibuffer shows `pulling synonyms...` with cycling dots; the toolbar icons stay visible and usable. Results expand the minibuffer upward to two rows of up to six context-fitting suggestions: Latin beside a laurel symbol above Germanic beside an oak leaf. The toolbar, counter, and Post button slide up as an opaque overlay, then slide down when results are dismissed. The window, editor layout, scroll position, and model selector stay fixed; the overlay can temporarily cover the model selector. Click a synonym to replace the target word or the entire selected phrase, preserving surrounding whitespace. Capitalization and native undo/redo are preserved. Suggestions stay visible when switching apps, toggling the drawer, or moving the cursor within the same word. Press **Esc**, edit the target, or choose a different word or phrase selection to cancel the lookup. A new status or error message replaces the suggestions. Long result rows can be scrolled horizontally.
 
 The blue model link with the robot icon above the toolbar selects Fable 5.1 (the default), Opus 5.5, Sonnet 5.5, or Haiku 5.5. The same dropdown offers Low, Medium (the default), High, Extra high, and Max reasoning levels. It stays open while selecting options; click outside or press Esc to close it. Both choices are saved in macOS preferences across restarts and apply to the next synonym or highlighting request; existing results stay visible.
 
@@ -85,6 +85,8 @@ Drafts are written atomically to `~/Library/Application Support/XWriter/drafts.j
 
 The model checks cover weighted counts, Unicode and URL handling, post validation, draft round trips, editing without duplication, thread restoration, retired-data migration, deletion, corrupt-file protection, synonym targeting, interval tracking, toolbar persistence, and response validation. The native UI checks also exercise Settings, exclusive highlighting toggles, edits during requests, synonym shortcuts, cancellation, replacement and undo, simulated sign-in, and subprocess timeouts. Checks use synthetic Claude responses and never sign in or send your drafts to Claude.
 
+Add `--synonyms-only` to `--ui-test` for focused composer and synonym-overlay checks. On unattended desktops where macOS refuses app activation, `--skip-activation-check` explicitly skips and reports the two app-switch checks.
+
 To render isolated previews without modifying your drafts:
 
 ```sh
@@ -92,6 +94,7 @@ To render isolated previews without modifying your drafts:
 ./XWriter.app/Contents/MacOS/XWriter --snapshot /tmp/xwriter-dark.png --demo --dark
 ./XWriter.app/Contents/MacOS/XWriter --snapshot /tmp/xwriter-drafts.png --demo --drafts
 ./XWriter.app/Contents/MacOS/XWriter --snapshot /tmp/xwriter-synonyms.png --synonyms
+./XWriter.app/Contents/MacOS/XWriter --snapshot /tmp/xwriter-synonyms-loading.png --synonyms --loading
 ./XWriter.app/Contents/MacOS/XWriter --snapshot /tmp/xwriter-highlights.png --highlights
 ./XWriter.app/Contents/MacOS/XWriter --snapshot /tmp/xwriter-cuts.png --highlights --cuts
 ./XWriter.app/Contents/MacOS/XWriter --snapshot /tmp/xwriter-wiggly.png --highlights --wiggly

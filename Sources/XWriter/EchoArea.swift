@@ -2,7 +2,10 @@ import SwiftUI
 
 @MainActor
 final class EchoBuffer: ObservableObject {
-    @Published var message: String?
+    @Published var message: String? {
+        didSet { if message != nil { onMessage?() } }
+    }
+    var onMessage: (() -> Void)?
 
     func clear() {
         if message != nil { message = nil }

@@ -3,7 +3,14 @@ import SwiftUI
 
 struct ComposeView: View {
     @ObservedObject var model: ComposerModel
+    @ObservedObject private var synonyms: SynonymController
     @ViewState<Bool> private var modelPopover = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    init(model: ComposerModel) {
+        self.model = model
+        synonyms = model.synonyms
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -15,7 +22,16 @@ struct ComposeView: View {
                         .overlay(alignment: .leading) { Rectangle().fill(Theme.border).frame(width: 1) }
                 }
             }
-            EchoArea(buffer: model.echo).measuringComposerHeight()
+            Color.clear.frame(height: ComposerWindowSizing.echoAreaHeight).measuringComposerHeight()
+        }
+        .overlay(alignment: .bottom) {
+            VStack(spacing: 0) {
+                toolbar.frame(width: model.composerWidth)
+                    .background(Theme.background)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                SynonymEchoArea(controller: synonyms, buffer: model.echo)
+            }
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.16), value: synonyms.hasResults)
         }
         .onPreferenceChange(ComposerHeightKey.self) { model.onContentHeightChange?($0) }
         .foregroundStyle(Theme.foreground)
@@ -43,7 +59,7 @@ struct ComposeView: View {
                 }
             }
             modelControl.measuringComposerHeight()
-            toolbar.measuringComposerHeight()
+            Color.clear.frame(height: ComposerWindowSizing.toolbarHeight).measuringComposerHeight()
         }
         .foregroundStyle(Theme.foreground)
         .background(Theme.background)
@@ -96,10 +112,9 @@ struct ComposeView: View {
         VStack(spacing: 0) {
             Rectangle().fill(Theme.border).frame(height: 1)
             HStack(spacing: 0) {
-                SynonymToolbar(controller: model.synonyms) {
-                    PromptToolbar(settings: model.toolbarSettings, controller: model.highlights,
-                                  toggle: model.toggleHighlights, openSettings: { model.onShowSettings?() })
-                }.padding(.leading, 44)
+                PromptToolbar(settings: model.toolbarSettings, controller: model.highlights,
+                              toggle: model.toggleHighlights, openSettings: { model.onShowSettings?() })
+                    .padding(.leading, 44)
                 Spacer(minLength: 8)
                 if model.draft.posts[model.activeIndex].hasContent {
                     CharacterRing(count: TweetLength.count(model.draft.posts[model.activeIndex].text))
@@ -109,7 +124,7 @@ struct ComposeView: View {
                     .buttonStyle(PillButtonStyle()).disabled(!model.canPost)
                     .help("Continue on X (⌘Return)")
             }
-            .frame(height: 58)
+            .frame(height: ComposerWindowSizing.toolbarHeight - 1)
         }.padding(.horizontal, 16)
     }
 }

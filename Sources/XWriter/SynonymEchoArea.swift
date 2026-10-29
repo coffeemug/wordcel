@@ -1,13 +1,30 @@
 import SwiftUI
 
-struct SynonymToolbar<Content: View>: View {
+struct SynonymEchoArea: View {
     @ObservedObject var controller: SynonymController
-    @ViewBuilder var content: () -> Content
+    let buffer: EchoBuffer
+    static let resultsHeight: CGFloat = 48
 
     var body: some View {
+        if controller.state == .idle {
+            EchoArea(buffer: buffer)
+        } else {
+            VStack(spacing: 0) {
+                Rectangle().fill(Theme.border).frame(height: 1)
+                content.padding(.horizontal, 12)
+                    .frame(height: (controller.hasResults ? Self.resultsHeight : ComposerWindowSizing.echoAreaHeight) - 1)
+            }
+            .background(Theme.background)
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Echo area")
+            .accessibilityIdentifier("echo-area")
+        }
+    }
+
+    @ViewBuilder private var content: some View {
         switch controller.state {
         case .idle:
-            content()
+            EmptyView()
         case .loading, .signingIn:
             TimelineView(.animation(minimumInterval: 0.4)) { timeline in
                 let dots = Int(timeline.date.timeIntervalSinceReferenceDate / 0.4) % 3 + 1

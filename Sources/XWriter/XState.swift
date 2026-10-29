@@ -149,6 +149,7 @@ final class ComposerModel: ObservableObject {
             ?? Bundle.main.url(forResource: "me", withExtension: "png").flatMap { NSImage(contentsOf: $0) }
             ?? NSImage(contentsOfFile: "me.png")
         echo.message = readError ?? toolbarSettings.error
+        echo.onMessage = { [weak self] in self?.synonyms.dismiss() }
         synonyms.onError = { [weak self] message in self?.notify(message) }
         highlights.onError = { [weak self] message in self?.notify(message) }
         highlights.onNotice = { [weak self] message in self?.notify(message) }

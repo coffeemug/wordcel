@@ -247,12 +247,17 @@ enum SelfCheck {
             require(!model.showDrafts, "Command-D closes the drawer")
             require(abs(window.frame.width - (1000 - ComposerWindowSizing.drawerWidth)) < 1, "closing respects resizing while drawer is open")
             await synonymInterface(model: model, window: window, service: synonymService) { require($0, $1) }
-            await highlightInterface(model: model, window: window, service: highlightService) { require($0, $1) }
-            await commandChecks { require($0, $1) }
+            let synonymsOnly = CommandLine.arguments.contains("--synonyms-only")
+            if !synonymsOnly {
+                await highlightInterface(model: model, window: window, service: highlightService) { require($0, $1) }
+                await commandChecks { require($0, $1) }
+            }
             require(model.save(), "edited content persists")
             UserDefaults.standard.removePersistentDomain(forName: model.storage.directory.lastPathComponent)
             try? FileManager.default.removeItem(at: model.storage.directory)
-            print("Passed \(checks) native UI checks: editing, drafts drawer, sizing, synonyms, highlights, settings, CLI lifecycle, focus, and persistence.")
+            let coverage = synonymsOnly ? "editing, drafts drawer, sizing, synonym overlay, and persistence" :
+                "editing, drafts drawer, sizing, synonyms, highlights, settings, CLI lifecycle, focus, and persistence"
+            print("Passed \(checks) native UI checks: \(coverage).")
             exit(0)
         }
     }
@@ -943,27 +948,81 @@ enum SelfCheck {
         editor.setSelectedRange(NSRange(location: target.location + 2, length: 0))
         await settle()
         let frame = window.frame
+        guard let scroll = editor.enclosingScrollView else { check(false, "synonyms have an editor viewport"); return }
+        func geometry() -> [NSRect] {
+            [editor.convert(editor.bounds, to: window.contentView),
+             scroll.convert(scroll.bounds, to: window.contentView), scroll.contentView.bounds]
+        }
+        func toolbarSnapshot(above height: CGFloat) -> Data? {
+            guard let view = window.contentView else { return nil }
+            let rect = view.convert(NSRect(x: 0, y: height, width: model.composerWidth, height: ComposerWindowSizing.toolbarHeight), from: nil)
+            guard let bitmap = view.bitmapImageRepForCachingDisplay(in: rect) else { return nil }
+            view.cacheDisplay(in: rect, to: bitmap)
+            return bitmap.representation(using: .png, properties: [:])
+        }
+        let originalGeometry = geometry()
+        let originalToolbar = toolbarSnapshot(above: ComposerWindowSizing.echoAreaHeight)
+        let originalEcho = echoSnapshot(in: window)
+        var layoutSamples: [[NSRect]] = []
+        let editorPostedFrames = editor.postsFrameChangedNotifications
+        let scrollPostedFrames = scroll.postsFrameChangedNotifications
+        let clipPostedBounds = scroll.contentView.postsBoundsChangedNotifications
+        editor.postsFrameChangedNotifications = true
+        scroll.postsFrameChangedNotifications = true
+        scroll.contentView.postsBoundsChangedNotifications = true
+        let observations: [(Notification.Name, NSView)] = [
+            (NSView.frameDidChangeNotification, editor),
+            (NSView.frameDidChangeNotification, scroll),
+            (NSView.boundsDidChangeNotification, scroll.contentView)
+        ]
+        let observers = observations.map { name, view in
+            NotificationCenter.default.addObserver(forName: name, object: view, queue: .main) { _ in
+                MainActor.assumeIsolated { layoutSamples.append(geometry()) }
+            }
+        }
+        service.delay = .milliseconds(600)
         check(editor.performKeyEquivalent(with: key(" ", code: 49)), "Control-Space is handled by the native editor")
         check(model.synonyms.state == .loading, "synonym lookup immediately shows loading")
         await settle()
+        check(model.synonyms.state == .loading && toolbarSnapshot(above: ComposerWindowSizing.echoAreaHeight) == originalToolbar &&
+              echoSnapshot(in: window) != originalEcho, "loading appears in the minibuffer while the toolbar remains unchanged")
+        try? await Task.sleep(for: .milliseconds(600))
+        service.delay = .milliseconds(100)
         let ready = SynonymController.State.ready(SynonymStub.lists)
         check(model.synonyms.state == ready, "synonyms display both groups")
         check(service.targets.last == "Help" && service.sentences.last == "😀 Help, help.", "the word and its sentence are sent to Claude")
-        check(window.frame == frame, "synonym rows preserve the composer frame")
+        check(originalToolbar != nil && toolbarSnapshot(above: SynonymEchoArea.resultsHeight) == originalToolbar,
+              "the unchanged toolbar, counter, and Post button shift above the two-line minibuffer")
+        check(window.frame == frame && geometry() == originalGeometry, "synonym rows preserve the window, editor frame, viewport, and scroll position")
+        NSApp.postEvent(key("\u{1b}", code: 53, modifiers: []), atStart: false)
+        await settle()
+        check(model.synonyms.state == .idle && toolbarSnapshot(above: ComposerWindowSizing.echoAreaHeight) == originalToolbar &&
+              window.frame == frame && geometry() == originalGeometry, "Escape lowers the footer without moving the editor")
+        for observer in observers { NotificationCenter.default.removeObserver(observer) }
+        editor.postsFrameChangedNotifications = editorPostedFrames
+        scroll.postsFrameChangedNotifications = scrollPostedFrames
+        scroll.contentView.postsBoundsChangedNotifications = clipPostedBounds
+        check(layoutSamples.allSatisfy { $0 == originalGeometry }, "the editor never shifts during footer expansion or collapse")
+        editor.keyDown(with: key(" ", code: 49))
+        await settle()
 
         window.makeFirstResponder(nil)
         check(model.synonyms.state == ready, "synonyms survive the editor losing focus")
         window.makeFirstResponder(editor)
-        NSApp.hide(nil)
-        await settle()
-        check(NSApp.isHidden && !window.isKeyWindow && model.synonyms.state == ready, "synonyms survive switching away from the app")
-        NSApp.unhide(nil)
-        NSApp.activate(ignoringOtherApps: true)
-        await settle()
-        window.makeKeyAndOrderFront(nil)
-        await settle()
-        check(window.isKeyWindow && model.synonyms.state == ready,
-              "synonyms remain when returning to the app (key=\(window.isKeyWindow), active=\(NSApp.isActive), unchanged=\(model.synonyms.state == ready), keyWindow=\(NSApp.keyWindow?.className ?? "none"))")
+        if CommandLine.arguments.contains("--skip-activation-check") {
+            print("Skipped app-switch activation checks: explicitly disabled for an unattended desktop.")
+        } else {
+            NSApp.hide(nil)
+            await settle()
+            check(NSApp.isHidden && !window.isKeyWindow && model.synonyms.state == ready, "synonyms survive switching away from the app")
+            NSApp.unhide(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            await settle()
+            window.makeKeyAndOrderFront(nil)
+            await settle()
+            check(window.isKeyWindow && model.synonyms.state == ready,
+                  "synonyms remain when returning to the app (key=\(window.isKeyWindow), active=\(NSApp.isActive), unchanged=\(model.synonyms.state == ready), keyWindow=\(NSApp.keyWindow?.className ?? "none"))")
+        }
 
         let previousWindows = Set(NSApp.windows.filter(\.isVisible).map(\.windowNumber))
         await click(at: NSPoint(x: 110, y: 82 + ComposerWindowSizing.echoAreaHeight))
@@ -1008,9 +1067,9 @@ enum SelfCheck {
               "arrow keys within the word preserve synonyms")
         editor.setSelectedRange(target)
         check(model.synonyms.state == ready, "selecting only the target word preserves synonyms")
-        await click(at: NSPoint(x: 100, y: 40 + ComposerWindowSizing.echoAreaHeight))
+        await click(at: NSPoint(x: 55, y: 34))
         check(editor.string == "😀 Assist, help." && model.draft.posts[0].text == editor.string, "replacement changes only the targeted occurrence")
-        check(model.synonyms.state == .idle, "replacement restores the icons")
+        check(model.synonyms.state == .idle && window.frame == frame, "replacement collapses the minibuffer without resizing the window")
         editor.undoManager?.undo()
         check(editor.string == "😀 Help, help.", "synonym replacement supports undo")
         editor.undoManager?.redo()
@@ -1020,7 +1079,7 @@ enum SelfCheck {
         editor.keyDown(with: key(" ", code: 49))
         await settle()
         check(service.models.last == .opus && service.efforts.last == .max, "subsequent lookups use the selected model and reasoning")
-        await click(at: NSPoint(x: 100, y: 18 + ComposerWindowSizing.echoAreaHeight))
+        await click(at: NSPoint(x: 55, y: 12))
         check(editor.string == "😀 Assist, back.", "clicking a Germanic synonym replaces the word")
         editor.setSelectedRange(NSRange(location: (editor.string as NSString).range(of: "back").location + 1, length: 0))
         editor.keyDown(with: key(" ", code: 49))
@@ -1091,7 +1150,7 @@ enum SelfCheck {
         check(model.synonyms.state == ready && service.targets.last == "lend a hand" &&
               service.sentences.last == "😀 Please lend a hand with this, then lend a hand.",
               "selected phrases request single-word alternatives with sentence context")
-        await click(at: NSPoint(x: 100, y: 40 + ComposerWindowSizing.echoAreaHeight))
+        await click(at: NSPoint(x: 55, y: 34))
         let replacedPhrase = "😀 Please assist with this, then lend a hand. Keep this sentence."
         check(editor.string == replacedPhrase && model.draft.posts[0].text == replacedPhrase,
               "clicking a synonym replaces the whole phrase once and preserves surrounding whitespace")
@@ -1115,7 +1174,7 @@ enum SelfCheck {
         await settle()
         check(model.echo.message == "Synthetic Claude failure" && model.synonyms.state == .idle &&
               window.attachedSheet == nil && NSApp.modalWindow == nil && window.firstResponder === editor,
-              "Claude errors restore the toolbar and appear in the echo area without taking focus")
+              "Claude errors replace the synonym view in the echo area without taking focus")
         let textBeforeError = editor.string
         editor.setSelectedRange(NSRange(location: (textBeforeError as NSString).length, length: 0))
         NSApp.postEvent(key("x", code: 7, modifiers: []), atStart: false)
@@ -1146,6 +1205,28 @@ enum SelfCheck {
         await settle()
         check(model.echo.message == "Draft saved", "a command's new message survives the action that produced it")
         service.failure = nil
+        let longText = String(repeating: "A line with help.\n", count: 80)
+        editor.insertText(longText, replacementRange: NSRange(location: 0, length: (editor.string as NSString).length))
+        await settle()
+        guard let longScroll = editor.enclosingScrollView else { check(false, "long post has a viewport"); return }
+        let longSource = longText as NSString
+        editor.setSelectedRange(longSource.range(of: "help", range: NSRange(location: 200, length: longSource.length - 200)))
+        longScroll.contentView.scroll(to: NSPoint(x: 0, y: 200))
+        longScroll.reflectScrolledClipView(longScroll.contentView)
+        await settle()
+        let longFrame = window.frame
+        let longViewport = longScroll.convert(longScroll.bounds, to: window.contentView)
+        let longOffset = longScroll.contentView.bounds
+        editor.keyDown(with: key(" ", code: 49))
+        await settle()
+        check(model.synonyms.state == ready && window.frame == longFrame &&
+              longScroll.convert(longScroll.bounds, to: window.contentView) == longViewport &&
+              longScroll.contentView.bounds == longOffset, "expanding over a long post preserves its viewport and scrolled position")
+        model.notify("A new status message")
+        await settle()
+        check(model.synonyms.state == .idle && model.echo.message == "A new status message" && window.frame == longFrame &&
+              longScroll.convert(longScroll.bounds, to: window.contentView) == longViewport &&
+              longScroll.contentView.bounds == longOffset, "new messages replace synonyms and lower the overlay without moving the text")
         await settle()
     }
 
