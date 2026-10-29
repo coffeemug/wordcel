@@ -528,7 +528,7 @@ enum SelfCheck {
             check(HighlightEdit(range: NSRange(location: 7, length: 0), replacementLength: 1).applying(to: spans).count == 2 &&
                   HighlightEdit(range: NSRange(location: 12, length: 0), replacementLength: 1).applying(to: spans).count == 2,
                   "typing at a highlight edge clears the affected span")
-            check(PromptIcon.allCases.allSatisfy { NSImage(systemSymbolName: $0.rawValue, accessibilityDescription: nil) != nil },
+            check(PromptIcon.allCases.flatMap(\.symbolNames).allSatisfy { NSImage(systemSymbolName: $0, accessibilityDescription: nil) != nil },
                   "every toolbar library icon is available on this Mac")
             let directory = FileManager.default.temporaryDirectory.appendingPathComponent("XWriter-toolbar-\(UUID())")
             let defaults = preferences(for: directory)
@@ -537,7 +537,9 @@ enum SelfCheck {
             check(settings.buttons.count == 2 && settings.buttons.allSatisfy(\.isConfigured), "toolbar starts with two editable examples")
             var legacyButtons = settings.buttons
             legacyButtons[0].name = "Roots"
-            legacyButtons.append(PromptButton(name: "Custom", icon: .fish, prompt: "Highlight concrete nouns."))
+            legacyButtons[0].icon = .leaf
+            legacyButtons.append(PromptButton(name: "Custom", icon: .leaf, prompt: "Highlight concrete nouns."))
+            legacyButtons.append(PromptButton(name: "Latin words", icon: .book, prompt: "Highlight borrowed terms."))
             guard let objects = try JSONSerialization.jsonObject(with: JSONEncoder().encode(legacyButtons)) as? [[String: Any]] else {
                 throw CocoaError(.coderReadCorrupt)
             }
@@ -547,16 +549,20 @@ enum SelfCheck {
                 return legacy
             })
             defaults.set(legacyData, forKey: PromptToolbarSettings.preferenceKey)
+            defaults.removeObject(forKey: PromptToolbarSettings.latinIconMigrationKey)
             let migrated = PromptToolbarSettings(preferences: defaults)
             check(migrated.buttons.map(\.id) == legacyButtons.map(\.id) && migrated.buttons[0].name == "Roots" &&
                   migrated.buttons[0].style == .latin && migrated.buttons[1].style == .cuts &&
                   migrated.buttons[2].style == HighlightStyle(), "legacy buttons preserve their identity and receive appropriate styles")
+            check(migrated.buttons[0].icon == .laurel && migrated.buttons[2].icon == .leaf && migrated.buttons[3].icon == .book,
+                  "the old Latin leaf becomes a laurel without changing unrelated or customized icons")
             let savedObjects = try JSONSerialization.jsonObject(with: defaults.data(forKey: PromptToolbarSettings.preferenceKey)!) as? [[String: Any]]
             check(savedObjects?.allSatisfy { $0["style"] != nil } == true, "migrated styles are persisted")
             migrated.buttons[0].style = HighlightStyle(fontColor: .rgba(red: 0.2, green: 0.4, blue: 0.6, alpha: 0.8),
                                                       strikethrough: true, underline: .wiggly, backgroundColor: .yellow)
+            migrated.buttons[0].icon = .leaf
             let styled = PromptToolbarSettings(preferences: defaults)
-            check(styled.buttons == migrated.buttons, "all style choices and color opacity survive a restart without preset overrides")
+            check(styled.buttons == migrated.buttons, "style choices, opacity, and an explicitly reselected leaf survive a restart without preset overrides")
             let invalid = PromptButton(name: "Invalid color", prompt: "Highlight words.",
                                        style: HighlightStyle(fontColor: .rgba(red: 2, green: 0, blue: 0, alpha: 1)))
             let invalidData = try JSONEncoder().encode([invalid])

@@ -1,7 +1,7 @@
 import SwiftUI
 
 enum PromptIcon: String, Codable, CaseIterable, Identifiable {
-    case leaf, scissors, book, pencil, highlighter, eye, eyeglasses, brain, heart, ear
+    case leaf, laurel, scissors, book, pencil, highlighter, eye, eyeglasses, brain, heart, ear
     case tree, flower = "camera.macro", sun = "sun.max", moon, cloud, bolt, flame, drop
     case ant, ladybug, bird, fish, hare, tortoise
     case flag, tag, target, scope, link, repetition = "repeat", paragraph
@@ -10,6 +10,14 @@ enum PromptIcon: String, Codable, CaseIterable, Identifiable {
     case warning = "exclamationmark.triangle", check = "checkmark.circle", clock
 
     var id: String { rawValue }
+    var symbolNames: [String] {
+        self == .laurel ? ["laurel.leading", "laurel.trailing"] : [rawValue]
+    }
+    var image: some View {
+        HStack(spacing: 0) {
+            ForEach(symbolNames, id: \.self) { Image(systemName: $0) }
+        }
+    }
     var title: String {
         switch self {
         case .flower: return "Flower"
@@ -41,7 +49,7 @@ struct PromptButton: Codable, Identifiable, Equatable {
 
     static var examples: [PromptButton] {
         [
-            PromptButton(name: "Latin words", icon: .leaf,
+            PromptButton(name: "Latin words", icon: .laurel,
                          prompt: "Highlight individual English words with Latin-derived roots, including borrowings through French. Include every qualifying occurrence. Exclude words with uncertain or mixed origins.", style: .latin),
             PromptButton(name: "Removable wording", icon: .scissors,
                          prompt: "Highlight words or phrases that can be deleted to make the writing tighter without losing its main meaning or breaking its grammar. Prefer clear redundancies, filler, and unnecessary qualifications. Highlight only the wording to remove, not the surrounding sentence.", style: .cuts)
@@ -79,24 +87,34 @@ final class PromptToolbarSettings: ObservableObject {
     var onChange: (([PromptButton]) -> Void)?
     private let preferences: UserDefaults
     static let preferenceKey = "promptToolbarButtons"
+    static let latinIconMigrationKey = "latinHighlightLaurelMigrated"
 
     init(preferences: UserDefaults) {
         self.preferences = preferences
         if preferences.object(forKey: Self.preferenceKey) == nil {
             buttons = PromptButton.examples
-            save()
         } else {
             do {
                 guard let data = preferences.data(forKey: Self.preferenceKey) else { throw CocoaError(.coderReadCorrupt) }
                 let saved = try JSONDecoder().decode([PromptButton].self, from: data)
                 guard Set(saved.map(\.id)).count == saved.count, saved.allSatisfy({ $0.style.isValid }) else { throw CocoaError(.coderReadCorrupt) }
                 buttons = saved
-                save()
             } catch {
                 buttons = []
                 isReadOnly = true
                 self.error = "Your toolbar settings could not be read and have been left untouched. Open Settings to reset them: \(error.localizedDescription)"
             }
+        }
+        if !isReadOnly {
+            if !preferences.bool(forKey: Self.latinIconMigrationKey) {
+                let latin = PromptButton.examples[0]
+                for index in buttons.indices where buttons[index].icon == .leaf &&
+                    (buttons[index].name == latin.name || buttons[index].prompt == latin.prompt) {
+                    buttons[index].icon = .laurel
+                }
+            }
+            save()
+            if error == nil { preferences.set(true, forKey: Self.latinIconMigrationKey) }
         }
     }
 
@@ -110,6 +128,7 @@ final class PromptToolbarSettings: ObservableObject {
         isReadOnly = false
         error = nil
         buttons = PromptButton.examples
+        if error == nil { preferences.set(true, forKey: Self.latinIconMigrationKey) }
     }
 }
 
@@ -160,9 +179,9 @@ private struct PromptToolbarButton: View {
         Button(action: action) {
             Group {
                 if loading && !reduceMotion {
-                    BouncingPromptIcon(symbol: button.icon.rawValue)
+                    BouncingPromptIcon(icon: button.icon)
                 } else {
-                    Image(systemName: button.icon.rawValue)
+                    button.icon.image
                 }
             }
                 .font(.system(size: 19))
@@ -183,7 +202,7 @@ private struct PromptToolbarButton: View {
 }
 
 private struct BouncingPromptIcon: View {
-    let symbol: String
+    let icon: PromptIcon
     @ViewState<Date> private var started = .now
 
     var body: some View {
@@ -191,7 +210,7 @@ private struct BouncingPromptIcon: View {
             let phase = max(0, timeline.date.timeIntervalSince(started)).truncatingRemainder(dividingBy: 1)
             let progress = min(phase / 0.65, 1)
             let height = 8 * 4 * progress * (1 - progress)
-            Image(systemName: symbol).offset(y: -height)
+            icon.image.offset(y: -height)
         }
     }
 }
@@ -213,8 +232,11 @@ struct ToolbarSettingsView: View {
                     VStack(spacing: 0) {
                         List(selection: $selection) {
                             ForEach(settings.buttons) { button in
-                                Label(button.name.isEmpty ? "Untitled button" : button.name, systemImage: button.icon.rawValue)
-                                    .tag(button.id)
+                                Label {
+                                    Text(button.name.isEmpty ? "Untitled button" : button.name)
+                                } icon: {
+                                    button.icon.image
+                                }.tag(button.id)
                             }
                             .onMove { settings.buttons.move(fromOffsets: $0, toOffset: $1) }
                         }
@@ -270,7 +292,7 @@ private struct PromptButtonEditor: View {
                 Text("Toolbar button").font(.system(size: 20, weight: .bold))
                 HStack(spacing: 12) {
                     Button { choosingIcon = true } label: {
-                        Image(systemName: button.icon.rawValue).font(.system(size: 22))
+                        button.icon.image.font(.system(size: 22))
                             .foregroundStyle(Theme.blue).frame(width: 40, height: 36)
                     }
                     .help("Choose icon").accessibilityLabel("Choose icon")
@@ -278,7 +300,7 @@ private struct PromptButtonEditor: View {
                         LazyVGrid(columns: Array(repeating: GridItem(.fixed(38)), count: 8), spacing: 8) {
                             ForEach(PromptIcon.allCases) { icon in
                                 Button { button.icon = icon; choosingIcon = false } label: {
-                                    Image(systemName: icon.rawValue).font(.system(size: 20))
+                                    icon.image.font(.system(size: 20))
                                         .frame(width: 38, height: 36)
                                         .background(Theme.blue.opacity(button.icon == icon ? 0.16 : 0), in: RoundedRectangle(cornerRadius: 6))
                                         .contentShape(Rectangle())

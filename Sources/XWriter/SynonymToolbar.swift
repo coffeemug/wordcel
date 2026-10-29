@@ -19,12 +19,9 @@ struct SynonymToolbar<Content: View>: View {
         case .ready(let lists):
             HStack(spacing: 8) {
                 VStack(alignment: .leading, spacing: 5) {
-                    HStack(spacing: 0) {
-                        Image(systemName: "laurel.leading")
-                        Image(systemName: "laurel.trailing")
-                    }
-                    .font(.system(size: 13)).frame(width: 17, height: 17)
-                    .help("Latin-rooted synonyms")
+                    PromptIcon.laurel.image
+                        .font(.system(size: 13)).frame(width: 17, height: 17)
+                        .help("Latin-rooted synonyms")
                     ComposerIcon(kind: .oak, size: 17).help("Germanic-rooted synonyms")
                 }.foregroundStyle(Theme.secondary).accessibilityHidden(true)
                 ScrollView(.horizontal) {
