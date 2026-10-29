@@ -82,15 +82,19 @@ final class PromptToolbarSettings: ObservableObject {
             onChange?(buttons)
         }
     }
-    @Published var error: String?
+    @Published var error: String? {
+        didSet { if let error { echo.message = error } }
+    }
+    let echo: EchoBuffer
     private(set) var isReadOnly = false
     var onChange: (([PromptButton]) -> Void)?
     private let preferences: UserDefaults
     static let preferenceKey = "promptToolbarButtons"
     static let latinIconMigrationKey = "latinHighlightLaurelMigrated"
 
-    init(preferences: UserDefaults) {
+    init(preferences: UserDefaults, echo: EchoBuffer? = nil) {
         self.preferences = preferences
+        self.echo = echo ?? EchoBuffer()
         if preferences.object(forKey: Self.preferenceKey) == nil {
             buttons = PromptButton.examples
         } else {
@@ -116,6 +120,7 @@ final class PromptToolbarSettings: ObservableObject {
             save()
             if error == nil { preferences.set(true, forKey: Self.latinIconMigrationKey) }
         }
+        if let error { self.echo.message = error }
     }
 
     private func save() {
@@ -128,7 +133,10 @@ final class PromptToolbarSettings: ObservableObject {
         isReadOnly = false
         error = nil
         buttons = PromptButton.examples
-        if error == nil { preferences.set(true, forKey: Self.latinIconMigrationKey) }
+        if error == nil {
+            preferences.set(true, forKey: Self.latinIconMigrationKey)
+            echo.message = "Toolbar reset to examples."
+        }
     }
 }
 
@@ -275,9 +283,6 @@ struct ToolbarSettingsView: View {
         .confirmationDialog("Replace the unreadable toolbar settings with the two examples?", isPresented: $confirmReset) {
             Button("Reset toolbar", role: .destructive) { settings.reset(); selection = settings.buttons.first?.id }
         }
-        .alert("Couldn't save settings", isPresented: Binding(get: { settings.error != nil && !settings.isReadOnly }, set: { if !$0 { settings.error = nil } })) {
-            Button("OK") { settings.error = nil }
-        } message: { Text(settings.error ?? "") }
     }
 }
 

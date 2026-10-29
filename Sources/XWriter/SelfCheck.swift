@@ -76,7 +76,7 @@ enum SelfCheck {
                     let event = NSEvent.mouseEvent(with: type, location: location, modifierFlags: [],
                                                   timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
                                                   context: nil, eventNumber: 0, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0)!
-                    window.sendEvent(event)
+                    NSApp.postEvent(event, atStart: false)
                 }
                 await settle()
             }
@@ -91,6 +91,23 @@ enum SelfCheck {
             require(model.avatar != nil, "profile photo loads")
             require(window.firstResponder === editor, "editor receives initial focus")
             require(editor.bounds.width > 400, "editor has usable width")
+            let emptyEcho = echoSnapshot(in: window)
+            model.synonyms.lookup(in: editor, model: model.synonymModel, effort: model.synonymEffort)
+            await settle()
+            let errorEcho = echoSnapshot(in: window)
+            require(model.echo.message == "Place the cursor in a word or select a phrase to find single-word alternatives." &&
+                    emptyEcho != nil && errorEcho != emptyEcho, "invalid input renders a message in the bottom echo area")
+            require(window.attachedSheet == nil && NSApp.modalWindow == nil && window.firstResponder === editor && window.frame == initialFrame,
+                    "echo errors do not open a dialog, steal focus, or resize the composer")
+            let longMessage = String(repeating: "Additional error details. ", count: 60) + "\nLast line of the message."
+            model.notify(longMessage)
+            await settle()
+            require(model.echo.message == longMessage && window.frame == initialFrame && window.firstResponder === editor,
+                    "long multiline messages retain all details without changing the editor's layout or focus")
+            model.notify("Draft saved")
+            await settle()
+            require(model.echo.message == "Draft saved" && echoSnapshot(in: window) != errorEcho,
+                    "informational messages replace errors in the same echo area")
             let oldPhotoShortcut = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
                                                     timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
                                                     context: nil, characters: "o", charactersIgnoringModifiers: "o", isARepeat: false, keyCode: 31)!
@@ -105,6 +122,7 @@ enum SelfCheck {
             require(model.draft.posts[0].text == "Hello #native", "native redo")
             let editorWidth = editor.bounds.width
             await clickHeader(at: initialFrame.width - 25)
+            require(model.echo.message == nil, "clicking the drawer icon clears the previous message")
             require(model.showDrafts && window.attachedSheet == nil, "drafts open without a dialog")
             require(abs(window.frame.width - initialFrame.width - ComposerWindowSizing.drawerWidth) < 1, "drawer widens the window")
             require(abs(editor.bounds.width - editorWidth) < 1, "drawer preserves composer width")
@@ -203,7 +221,7 @@ enum SelfCheck {
             second.insertText("Second post", replacementRange: NSRange(location: NSNotFound, length: 0))
             require(model.draft.posts[1].text == "Second post" && model.canPost, "second editor binds to its own post")
             model.removePost(model.draft.posts[1].id)
-            window.setContentSize(NSSize(width: 560, height: 300))
+            window.setContentSize(NSSize(width: 560, height: 300 + ComposerWindowSizing.echoAreaHeight))
             await settle()
             require(model.activeEditor === editor, "focus returns after removing a post")
             require(abs(editor.bounds.width - (editorWidth + 560 - initialFrame.width)) < 1, "manual resizing still updates the editor width")
@@ -358,7 +376,7 @@ enum SelfCheck {
         let fitted = ComposerWindowSizing.frame(current: frame, contentHeight: 2000, screen: smallScreen)
         check(fitted.height == 552 && smallScreen.contains(fitted), "growth fits smaller screens")
         let shrunk = ComposerWindowSizing.frame(current: expanded, contentHeight: 200, screen: screen)
-        check(shrunk.height == 332 && shrunk.maxY == expanded.maxY, "shrinking preserves the top edge and minimum height")
+        check(shrunk.height == ComposerWindowSizing.minimumHeight && shrunk.maxY == expanded.maxY, "shrinking preserves the top edge and minimum height")
         let drawerFrame = ComposerWindowSizing.frame(current: frame, composerWidth: frame.width, showingDrafts: true, screen: screen)
         check(drawerFrame.width == frame.width + ComposerWindowSizing.drawerWidth && drawerFrame.origin == frame.origin &&
               drawerFrame.height == frame.height, "drawer expands to the right without changing composer size")
@@ -425,7 +443,9 @@ enum SelfCheck {
             check(afterDelete.drafts.allSatisfy { $0.id != firstID }, "deletion persists")
             try Data("bad json".utf8).write(to: store.file)
             let protected = ComposerModel(directory: directory, preferences: preferences)
-            check(protected.error != nil && !protected.save(), "corrupt storage is protected")
+            check(protected.echo.message != nil && !protected.save(), "corrupt storage is protected and reported in the echo area")
+            protected.notify("Another message")
+            check(!protected.save() && protected.echo.message != "Another message", "blocked saves repeat the storage error rather than failing silently")
             let untouched = try Data(contentsOf: store.file)
             check(untouched == Data("bad json".utf8), "corrupt file is not overwritten")
 
@@ -483,7 +503,7 @@ enum SelfCheck {
             ])
             try futureData.write(to: legacyStore.file)
             let futureModel = ComposerModel(directory: legacyStore.directory, preferences: preferences)
-            check(futureModel.error != nil && !futureModel.save(), "unsupported archive versions cannot be overwritten")
+            check(futureModel.echo.message != nil && !futureModel.save(), "unsupported archive versions cannot be overwritten")
             let untouchedFuture = try Data(contentsOf: legacyStore.file)
             check(untouchedFuture == futureData, "unsupported archive remains untouched")
         } catch { fputs("FAIL: \(error)\n", stderr); exit(1) }
@@ -568,7 +588,8 @@ enum SelfCheck {
             let invalidData = try JSONEncoder().encode([invalid])
             defaults.set(invalidData, forKey: PromptToolbarSettings.preferenceKey)
             let protected = PromptToolbarSettings(preferences: defaults)
-            check(protected.isReadOnly && protected.error != nil && defaults.data(forKey: PromptToolbarSettings.preferenceKey) == invalidData,
+            check(protected.isReadOnly && protected.error != nil && protected.echo.message == protected.error &&
+                  defaults.data(forKey: PromptToolbarSettings.preferenceKey) == invalidData,
                   "invalid saved color components are reported without overwriting settings")
             settings.buttons.append(PromptButton(name: "Custom", icon: .fish, prompt: "Highlight concrete nouns."))
             settings.buttons[0].prompt = "Highlight verbs."
@@ -592,7 +613,7 @@ enum SelfCheck {
         func settle() async { try? await Task.sleep(for: .milliseconds(350)) }
         func firstIconBounds() -> NSRect? {
             guard let view = window.contentView else { return nil }
-            let rect = view.convert(NSRect(x: 60, y: 4, width: 34, height: 50), from: nil)
+            let rect = view.convert(NSRect(x: 60, y: 4 + ComposerWindowSizing.echoAreaHeight, width: 34, height: 50), from: nil)
             guard let bitmap = view.bitmapImageRepForCachingDisplay(in: rect) else { return nil }
             view.cacheDisplay(in: rect, to: bitmap)
             var minX = bitmap.pixelsWide, minY = bitmap.pixelsHigh, maxX = -1, maxY = -1
@@ -633,9 +654,11 @@ enum SelfCheck {
         editor.breakUndoCoalescing()
         editor.undoManager?.removeAllActions()
         let buttons = model.toolbarSettings.buttons
-        let first = NSPoint(x: 77, y: 29)
-        let second = NSPoint(x: 111, y: 29)
+        let first = NSPoint(x: 77, y: 29 + ComposerWindowSizing.echoAreaHeight)
+        let second = NSPoint(x: 111, y: 29 + ComposerWindowSizing.echoAreaHeight)
+        model.notify("Previous message")
         await click(first)
+        check(model.echo.message == nil, "clicking a highlight icon clears the previous message")
         check(model.highlights.state == .ready && model.highlights.activeButtonID == buttons[0].id && model.highlights.ranges.count == 3,
               "clicking a configured button highlights the post and stays pressed")
         guard let restingIcon = firstIconBounds() else { check(false, "active toolbar icon is visible"); return }
@@ -738,13 +761,26 @@ enum SelfCheck {
         service.authenticated = false
         await click(first)
         check(service.signIns == 1 && model.highlights.state == .ready, "highlighting uses subscription sign-in when necessary")
+        model.notify("Before opening Settings")
         check(shortcut(",", code: 43, in: window), "Command-comma opens Settings")
         await settle()
+        check(model.echo.message == nil, "menu commands clear the previous message before performing their action")
         guard let settings = NSApp.windows.first(where: { $0.title == "Settings" && $0.isVisible }) else {
             check(false, "Settings window is visible"); return
         }
         check(model.highlights.ranges.count == 3 && window.attachedSheet == nil, "opening Settings preserves pressed highlights")
+        let settingsResponder = settings.firstResponder
+        let settingsEcho = echoSnapshot(in: settings)
+        let composerEcho = echoSnapshot(in: window)
+        model.toolbarSettings.error = "Synthetic settings failure"
+        await settle()
+        check(model.echo.message == "Synthetic settings failure" && echoSnapshot(in: settings) == settingsEcho &&
+              echoSnapshot(in: window) != composerEcho &&
+              settings.attachedSheet == nil && NSApp.modalWindow == nil && settings.firstResponder === settingsResponder,
+              "Settings has no echo area; its errors appear only in the composer without a modal")
+        model.toolbarSettings.error = nil
         await click(NSPoint(x: 28, y: 24), in: settings)
+        check(model.echo.message == nil, "operations in Settings also clear the previous message")
         check(model.toolbarSettings.buttons.count == 3 && !model.toolbarSettings.buttons[2].isConfigured, "Settings adds an initially unconfigured button")
         await click(NSPoint(x: 425, y: settings.contentView!.bounds.height - 80), in: settings)
         if let field = settings.firstResponder as? NSTextView {
@@ -791,11 +827,14 @@ enum SelfCheck {
         await click(first)
         check(model.highlights.state == .ready && model.highlights.activeButtonID != nil && editor.highlightRanges.isEmpty,
               "an empty response leaves the button pressed without fake highlights")
+        check(model.echo.message == "No matching text remains.", "empty model results are reported in the echo area")
         await click(first)
         service.result = HighlightMatches(matches: [.init(text: "not in this post", occurrence: 1)])
         await click(first)
-        check(model.highlights.state == .idle && model.error != nil, "invalid intervals are reported and never partially applied")
-        model.error = nil
+        check(model.highlights.state == .idle && model.echo.message == HighlightError.invalidResponse.localizedDescription &&
+              window.attachedSheet == nil && NSApp.modalWindow == nil && window.firstResponder === editor,
+              "invalid intervals are reported non-modally and never partially applied")
+        model.echo.message = nil
         await settle()
         service.result = HighlightMatches(matches: [.init(text: "clear", occurrence: 1)])
         await click(first)
@@ -803,6 +842,18 @@ enum SelfCheck {
         await settle()
         check(model.highlights.state == .idle, "switching drafts clears document-specific highlights")
         highlightStyleRenderingChecks(check: check)
+        guard let handoffEditor = model.activeEditor else { check(false, "publishing preview has an editor"); return }
+        handoffEditor.insertText("A post to review.", replacementRange: NSRange(location: NSNotFound, length: 0))
+        model.prepareHandoff()
+        await settle()
+        guard let handoff = window.attachedSheet else { check(false, "publishing review opens"); return }
+        let previousEcho = echoSnapshot(in: handoff)
+        model.notify("A message while reviewing the post.")
+        await settle()
+        check(previousEcho != nil && echoSnapshot(in: handoff) != previousEcho && window.attachedSheet === handoff &&
+              handoff.attachedSheet == nil, "publishing messages appear inside its echo area without opening another dialog")
+        model.showHandoff = false
+        await settle()
     }
 
     @MainActor private static func highlightStyleRenderingChecks(check: (Bool, String) -> Void) {
@@ -915,7 +966,7 @@ enum SelfCheck {
               "synonyms remain when returning to the app (key=\(window.isKeyWindow), active=\(NSApp.isActive), unchanged=\(model.synonyms.state == ready), keyWindow=\(NSApp.keyWindow?.className ?? "none"))")
 
         let previousWindows = Set(NSApp.windows.filter(\.isVisible).map(\.windowNumber))
-        await click(at: NSPoint(x: 110, y: 82))
+        await click(at: NSPoint(x: 110, y: 82 + ComposerWindowSizing.echoAreaHeight))
         guard let picker = NSApp.windows.first(where: { $0.isVisible && !previousWindows.contains($0.windowNumber) }),
               let pickerContent = picker.contentView else {
             check(false, "model link opens the model picker")
@@ -932,12 +983,12 @@ enum SelfCheck {
         check(!picker.isVisible && window.firstResponder === editor && model.synonyms.state == ready,
               "Escape closes the picker without dismissing synonyms")
         let visibleWindows = Set(NSApp.windows.filter(\.isVisible).map(\.windowNumber))
-        await click(at: NSPoint(x: 110, y: 82))
+        await click(at: NSPoint(x: 110, y: 82 + ComposerWindowSizing.echoAreaHeight))
         guard let reopenedPicker = NSApp.windows.first(where: { $0.isVisible && !visibleWindows.contains($0.windowNumber) }) else {
             check(false, "model link reopens after Escape")
             return
         }
-        await click(at: NSPoint(x: 30, y: 82))
+        await click(at: NSPoint(x: 30, y: 82 + ComposerWindowSizing.echoAreaHeight))
         check(!reopenedPicker.isVisible && model.synonyms.state == ready, "clicking outside closes the picker without dismissing synonyms")
         let restored = ComposerModel(directory: model.storage.directory, preferences: preferences(for: model.storage.directory))
         check(restored.synonymModel == .opus && restored.synonymEffort == .max, "model and reasoning picker selections persist outside the view")
@@ -957,7 +1008,7 @@ enum SelfCheck {
               "arrow keys within the word preserve synonyms")
         editor.setSelectedRange(target)
         check(model.synonyms.state == ready, "selecting only the target word preserves synonyms")
-        await click(at: NSPoint(x: 100, y: 40))
+        await click(at: NSPoint(x: 100, y: 40 + ComposerWindowSizing.echoAreaHeight))
         check(editor.string == "😀 Assist, help." && model.draft.posts[0].text == editor.string, "replacement changes only the targeted occurrence")
         check(model.synonyms.state == .idle, "replacement restores the icons")
         editor.undoManager?.undo()
@@ -969,7 +1020,7 @@ enum SelfCheck {
         editor.keyDown(with: key(" ", code: 49))
         await settle()
         check(service.models.last == .opus && service.efforts.last == .max, "subsequent lookups use the selected model and reasoning")
-        await click(at: NSPoint(x: 100, y: 18))
+        await click(at: NSPoint(x: 100, y: 18 + ComposerWindowSizing.echoAreaHeight))
         check(editor.string == "😀 Assist, back.", "clicking a Germanic synonym replaces the word")
         editor.setSelectedRange(NSRange(location: (editor.string as NSString).range(of: "back").location + 1, length: 0))
         editor.keyDown(with: key(" ", code: 49))
@@ -1040,7 +1091,7 @@ enum SelfCheck {
         check(model.synonyms.state == ready && service.targets.last == "lend a hand" &&
               service.sentences.last == "😀 Please lend a hand with this, then lend a hand.",
               "selected phrases request single-word alternatives with sentence context")
-        await click(at: NSPoint(x: 100, y: 40))
+        await click(at: NSPoint(x: 100, y: 40 + ComposerWindowSizing.echoAreaHeight))
         let replacedPhrase = "😀 Please assist with this, then lend a hand. Keep this sentence."
         check(editor.string == replacedPhrase && model.draft.posts[0].text == replacedPhrase,
               "clicking a synonym replaces the whole phrase once and preserves surrounding whitespace")
@@ -1062,10 +1113,48 @@ enum SelfCheck {
         service.failure = ClaudeCLIError.failed("Synthetic Claude failure")
         editor.keyDown(with: key(" ", code: 49))
         await settle()
-        check(model.error == "Synthetic Claude failure" && model.synonyms.state == .idle, "Claude errors restore the toolbar and are surfaced")
-        model.error = nil
+        check(model.echo.message == "Synthetic Claude failure" && model.synonyms.state == .idle &&
+              window.attachedSheet == nil && NSApp.modalWindow == nil && window.firstResponder === editor,
+              "Claude errors restore the toolbar and appear in the echo area without taking focus")
+        let textBeforeError = editor.string
+        editor.setSelectedRange(NSRange(location: (textBeforeError as NSString).length, length: 0))
+        NSApp.postEvent(key("x", code: 7, modifiers: []), atStart: false)
+        await settle()
+        check(editor.string == textBeforeError + "x" && model.echo.message == nil,
+              "typing after a model error clears the message without swallowing input")
+        let end = editor.selectedRange().location
+        model.notify("Before moving the cursor")
+        NSApp.postEvent(key("\u{f702}", code: 123, modifiers: []), atStart: false)
+        await settle()
+        check(model.echo.message == nil && editor.selectedRange().location == end - 1,
+              "moving the text cursor clears the message without swallowing the movement")
+        let selectionBeforeEscape = editor.selectedRange()
+        model.notify("Before Escape")
+        NSApp.postEvent(key("\u{1b}", code: 53, modifiers: []), atStart: false)
+        await settle()
+        check(model.echo.message == nil && editor.selectedRange() == selectionBeforeEscape && window.firstResponder === editor,
+              "Escape clears the message without changing the selection or focus")
+        model.notify("Before scrolling")
+        if let event = CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 1, wheel1: 1, wheel2: 0, wheel3: 0),
+           let scroll = NSEvent(cgEvent: event) {
+            NSApp.postEvent(scroll, atStart: false)
+            await settle()
+            check(model.echo.message == nil, "scrolling clears the message")
+        } else { check(false, "scroll event can be constructed") }
+        model.notify("Before saving")
+        NSApp.postEvent(key("s", code: 1, modifiers: .command), atStart: false)
+        await settle()
+        check(model.echo.message == "Draft saved", "a command's new message survives the action that produced it")
         service.failure = nil
         await settle()
+    }
+
+    @MainActor private static func echoSnapshot(in window: NSWindow) -> Data? {
+        guard let view = window.contentView else { return nil }
+        let rect = view.convert(NSRect(x: 0, y: 0, width: view.bounds.width, height: ComposerWindowSizing.echoAreaHeight), from: nil)
+        guard let bitmap = view.bitmapImageRepForCachingDisplay(in: rect) else { return nil }
+        view.cacheDisplay(in: rect, to: bitmap)
+        return bitmap.representation(using: .png, properties: [:])
     }
 
     @MainActor private static func commandChecks(check: (Bool, String) -> Void) async {

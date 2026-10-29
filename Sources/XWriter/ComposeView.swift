@@ -6,22 +6,23 @@ struct ComposeView: View {
     @ViewState<Bool> private var modelPopover = false
 
     var body: some View {
-        HStack(spacing: 0) {
-            composer.frame(width: model.composerWidth)
-            if model.showDrafts {
-                DraftsView(model: model)
-                    .frame(width: ComposerWindowSizing.drawerWidth)
-                    .overlay(alignment: .leading) { Rectangle().fill(Theme.border).frame(width: 1) }
+        VStack(spacing: 0) {
+            HStack(spacing: 0) {
+                composer.frame(width: model.composerWidth)
+                if model.showDrafts {
+                    DraftsView(model: model)
+                        .frame(width: ComposerWindowSizing.drawerWidth)
+                        .overlay(alignment: .leading) { Rectangle().fill(Theme.border).frame(width: 1) }
+                }
             }
+            EchoArea(buffer: model.echo).measuringComposerHeight()
         }
+        .onPreferenceChange(ComposerHeightKey.self) { model.onContentHeightChange?($0) }
         .foregroundStyle(Theme.foreground)
         .background(Theme.background)
         .sheet(isPresented: $model.showHandoff) { HandoffView(model: model) }
-        .alert("Something needs attention", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
-            Button("OK") { model.error = nil }
-        } message: { Text(model.error ?? "") }
         .frame(minWidth: ComposerWindowSizing.minimumWidth + (model.showDrafts ? ComposerWindowSizing.drawerWidth : 0),
-               maxWidth: .infinity, minHeight: 300, alignment: .leading)
+               maxWidth: .infinity, minHeight: 300 + ComposerWindowSizing.echoAreaHeight, alignment: .leading)
         .ignoresSafeArea()
     }
 
@@ -44,19 +45,8 @@ struct ComposeView: View {
             modelControl.measuringComposerHeight()
             toolbar.measuringComposerHeight()
         }
-        .onPreferenceChange(ComposerHeightKey.self) { model.onContentHeightChange?($0) }
         .foregroundStyle(Theme.foreground)
         .background(Theme.background)
-        .overlay(alignment: .bottom) {
-            if let toast = model.toast {
-                Text(toast).font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(.white).padding(.horizontal, 18).padding(.vertical, 12)
-                    .background(Theme.blue, in: Capsule()).shadow(color: .black.opacity(0.12), radius: 10, y: 3)
-                    .padding(.bottom, 69).allowsHitTesting(false)
-                    .transition(.opacity.combined(with: .move(edge: .bottom)))
-            }
-        }
-        .animation(.easeOut(duration: 0.16), value: model.toast)
     }
 
     private var header: some View {

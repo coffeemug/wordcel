@@ -91,8 +91,6 @@ final class ComposerModel: ObservableObject {
         }
     }
     @Published var showHandoff = false
-    @Published var error: String?
-    @Published var toast: String?
     @Published var synonymModel: ClaudeModel {
         didSet { preferences.set(synonymModel.rawValue, forKey: "synonymModel") }
     }
@@ -107,10 +105,10 @@ final class ComposerModel: ObservableObject {
     let synonyms: SynonymController
     let toolbarSettings: PromptToolbarSettings
     let highlights: HighlightController
+    let echo = EchoBuffer()
     private let preferences: UserDefaults
     private var saveWork: DispatchWorkItem?
-    private var toastWork: DispatchWorkItem?
-    private var canSave = true
+    private var saveBlockReason: String?
     weak var activeEditor: ComposerTextView?
     var onContentHeightChange: ((CGFloat) -> Void)?
     var onDraftsVisibilityChange: ((Bool) -> Void)?
@@ -129,13 +127,13 @@ final class ComposerModel: ObservableObject {
         let cli = ClaudeCLI(configurationDirectory: base.appendingPathComponent("claude-code"))
         synonyms = SynonymController(service: synonymService ?? cli)
         highlights = HighlightController(service: highlightService ?? cli)
-        toolbarSettings = PromptToolbarSettings(preferences: preferences)
+        toolbarSettings = PromptToolbarSettings(preferences: preferences, echo: echo)
         var initial = DraftArchive()
         var readError: String?
         do { initial = try storage.read() }
         catch {
             readError = "Your draft file could not be loaded or upgraded: \(error.localizedDescription) It has been left untouched at \(storage.file.path). New drafts cannot be saved until this file is repaired or moved."
-            canSave = false
+            saveBlockReason = readError
         }
         if let savedModel, ClaudeModel(rawValue: savedModel) == nil {
             readError = readError ?? "Your saved synonym model is no longer available. Using Fable 5.1; choose a model to save a new preference."
@@ -150,9 +148,9 @@ final class ComposerModel: ObservableObject {
         avatar = NSImage(contentsOf: base.appendingPathComponent("avatar.png"))
             ?? Bundle.main.url(forResource: "me", withExtension: "png").flatMap { NSImage(contentsOf: $0) }
             ?? NSImage(contentsOfFile: "me.png")
-        error = readError ?? toolbarSettings.error
-        synonyms.onError = { [weak self] message in self?.error = message }
-        highlights.onError = { [weak self] message in self?.error = message }
+        echo.message = readError ?? toolbarSettings.error
+        synonyms.onError = { [weak self] message in self?.notify(message) }
+        highlights.onError = { [weak self] message in self?.notify(message) }
         highlights.onNotice = { [weak self] message in self?.notify(message) }
         toolbarSettings.onChange = { [weak self] buttons in self?.highlights.configurationChanged(buttons) }
     }
@@ -162,7 +160,7 @@ final class ComposerModel: ObservableObject {
 
     func toggleHighlights(_ button: PromptButton) {
         guard let editor = activeEditor, editor.window != nil else {
-            error = "Place the cursor in a post to run a highlighting prompt."
+            notify("Place the cursor in a post to run a highlighting prompt.")
             return
         }
         synonyms.dismiss()
@@ -182,7 +180,10 @@ final class ComposerModel: ObservableObject {
 
     @discardableResult func save() -> Bool {
         saveWork?.cancel()
-        guard canSave else { return false }
+        if let saveBlockReason {
+            notify(saveBlockReason)
+            return false
+        }
         var current = draft
         current.modified = Date()
         var updated = drafts.filter { $0.id != current.id }
@@ -192,7 +193,7 @@ final class ComposerModel: ObservableObject {
             drafts = updated
             return true
         } catch {
-            self.error = "Couldn't save your draft: \(error.localizedDescription)"
+            notify("Couldn't save your draft: \(error.localizedDescription)")
             return false
         }
     }
@@ -243,16 +244,12 @@ final class ComposerModel: ObservableObject {
                 try FileManager.default.createDirectory(at: storage.directory, withIntermediateDirectories: true)
                 try data.write(to: storage.directory.appendingPathComponent("avatar.png"), options: .atomic)
                 avatar = resized
-            } catch { self.error = "Couldn't save your profile photo: \(error.localizedDescription)" }
+            } catch { self.notify("Couldn't save your profile photo: \(error.localizedDescription)") }
         }
     }
 
     func notify(_ message: String) {
-        toastWork?.cancel()
-        toast = message
-        let work = DispatchWorkItem { [weak self] in self?.toast = nil }
-        toastWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: work)
+        echo.message = message
     }
 
     func copy(_ text: String) {
@@ -282,7 +279,7 @@ final class ComposerModel: ObservableObject {
         if useClipboard { copy(post.text) }
         let url = useClipboard ? URL(string: "https://x.com/compose/post")! : Self.intentURL(for: post.text)
         guard NSWorkspace.shared.open(url) else {
-            error = "Couldn't open your browser. Copy your text and paste it into X."
+            notify("Couldn't open your browser. Copy your text and paste it into X.")
             return
         }
         if useClipboard { notify("Text copied — paste it into X with ⌘V") }

@@ -19,6 +19,7 @@ The build produces an ad-hoc signed `XWriter.app` in the project directory. You 
 - The window grows downward as you type, up to 760 points or the available screen height, then scrolls. Deleting text shrinks it again.
 - Light, dark, and system appearance from the View menu.
 - Native text selection, undo/redo, spell checking, and highlighting for links, hashtags, and mentions.
+- A bottom echo area displays errors and status messages instead of message dialogs or floating toasts, without interrupting typing. The next keypress, cursor movement, click, scroll, or menu command clears the message; new messages produced by that action remain visible. Hover to read a long message in full. Settings has no echo area. Destructive actions still ask for confirmation.
 - On-demand Claude synonyms grouped by Latin and Germanic roots, with click-to-replace suggestions.
 - Configurable prompt buttons highlight text using Claude. Add, remove, rename, reorder, and customize their icons and prompts in Settings (⌘,).
 - Automatic local draft saving, restoration, and deletion in a right-side drawer. The drawer icon widens the window to keep the composer alongside your drafts. Closing the window keeps the draft; clicking the Dock icon reopens it.
@@ -96,6 +97,7 @@ To render isolated previews without modifying your drafts:
 ./XWriter.app/Contents/MacOS/XWriter --snapshot /tmp/xwriter-wiggly.png --highlights --wiggly
 ./XWriter.app/Contents/MacOS/XWriter --snapshot /tmp/xwriter-loading.png --highlights --loading
 ./XWriter.app/Contents/MacOS/XWriter --snapshot /tmp/xwriter-settings.png --settings
+./XWriter.app/Contents/MacOS/XWriter --snapshot /tmp/xwriter-message.png --message
 ```
 
 The project uses a small `ViewState` wrapper around SwiftUI's public `State<Value>` because recent Command Line Tools SDKs expose a same-named macro whose plugin only ships with Xcode.

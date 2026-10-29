@@ -95,6 +95,13 @@ struct DraftsView: View {
 struct HandoffView: View {
     @ObservedObject var model: ComposerModel
     var body: some View {
+        VStack(spacing: 0) {
+            content
+            EchoArea(buffer: model.echo)
+        }
+    }
+
+    private var content: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
                 Text("Ready for X").font(.system(size: 24, weight: .bold))

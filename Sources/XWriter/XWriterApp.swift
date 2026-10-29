@@ -59,7 +59,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var composerWidthBeforeDrawer: CGFloat?
     private var frameAutosaveNameBeforeDrawer: NSWindow.FrameAutosaveName?
     private var isResizingDraftsDrawer = false
-    private var keyboardMonitor: Any?
+    private var inputMonitor: Any?
+    private var menuActionObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if let index = CommandLine.arguments.firstIndex(of: "--snapshot"), CommandLine.arguments.count > index + 1 {
@@ -93,6 +94,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             if CommandLine.arguments.contains("--wiggly") { model.toolbarSettings.buttons[0].style.underline = .wiggly }
             if CommandLine.arguments.contains("--dotted") { model.toolbarSettings.buttons[0].style.underline = .dotted }
         }
+        if isTesting && CommandLine.arguments.contains("--message") {
+            model.notify("Claude returned invalid highlighting intervals. Please try again.")
+        }
         if CommandLine.arguments.contains("--dark") { NSApp.appearance = NSAppearance(named: .darkAqua) }
         else { model.applyAppearance() }
         configureMenu()
@@ -105,7 +109,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.isMovableByWindowBackground = true
         window.isReleasedWhenClosed = false
         window.backgroundColor = Theme.backgroundNS
-        window.minSize = NSSize(width: ComposerWindowSizing.minimumWidth, height: 300)
+        window.minSize = NSSize(width: ComposerWindowSizing.minimumWidth, height: 300 + ComposerWindowSizing.echoAreaHeight)
         window.delegate = self
         model.onContentHeightChange = { [weak self] height in self?.scheduleResize(to: height) }
         model.onDraftsVisibilityChange = { [weak self] visible in self?.resizeDraftsDrawer(visible) }
@@ -119,15 +123,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.center()
         if !isTesting { window.setFrameAutosaveName("XWriterComposer") }
         window.makeKeyAndOrderFront(nil)
-        keyboardMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self, event.window === self.window else { return event }
+        inputMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel, .beginGesture]) { [weak self] event in
+            guard let self else { return event }
+            let hadMessage = self.model.echo.message != nil
+            self.model.echo.clear()
+            guard event.type == .keyDown, event.window === self.window else { return event }
             // AppKit otherwise matches the retired thread shortcut to Command-Return's publishing action.
             if event.keyCode == 36 && event.modifierFlags.intersection([.command, .control, .option, .shift]) == [.command, .shift] {
                 return nil
             }
-            guard event.keyCode == 53, self.model.synonyms.state != .idle else { return event }
-            self.model.synonyms.dismiss()
+            guard event.keyCode == 53, hadMessage || self.model.synonyms.state != .idle else { return event }
+            if self.model.synonyms.state != .idle { self.model.synonyms.dismiss() }
             return nil
+        }
+        menuActionObserver = NotificationCenter.default.addObserver(forName: NSMenu.willSendActionNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.model.echo.clear() }
         }
         NSApp.activate(ignoringOtherApps: true)
         if isTesting && CommandLine.arguments.contains("--drafts") { model.toggleDrafts() }
@@ -241,7 +251,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return alert.runModal() == .alertSecondButtonReturn ? .terminateNow : .terminateCancel
     }
     func applicationWillTerminate(_ notification: Notification) {
-        if let keyboardMonitor { NSEvent.removeMonitor(keyboardMonitor) }
+        if let inputMonitor { NSEvent.removeMonitor(inputMonitor) }
+        if let menuActionObserver { NotificationCenter.default.removeObserver(menuActionObserver) }
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         window.makeKeyAndOrderFront(nil)

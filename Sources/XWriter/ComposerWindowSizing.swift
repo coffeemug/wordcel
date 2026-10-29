@@ -3,7 +3,8 @@ import AppKit
 enum ComposerWindowSizing {
     static let minimumWidth: CGFloat = 560
     static let drawerWidth: CGFloat = 360
-    static let minimumHeight: CGFloat = 332
+    static let echoAreaHeight: CGFloat = 28
+    static let minimumHeight: CGFloat = 332 + echoAreaHeight
     static let maximumHeight: CGFloat = 760
     static let screenMargin: CGFloat = 24
 
