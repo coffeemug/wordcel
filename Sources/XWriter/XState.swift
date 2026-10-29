@@ -163,12 +163,20 @@ final class ComposerModel: ObservableObject {
             ?? Bundle.main.url(forResource: "me", withExtension: "png").flatMap { NSImage(contentsOf: $0) }
             ?? NSImage(contentsOfFile: "me.png")
         echo.message = readError ?? toolbarSettings.error
-        echo.onMessage = { [weak self] in self?.synonyms.dismiss(); self?.prompts.dismiss() }
+        echo.onMessage = { [weak self] in
+            self?.highlights.clearInspection()
+            self?.synonyms.dismiss()
+            self?.prompts.dismiss()
+        }
         prompts.onReply = { [weak self] message in self?.echo.continueConversation(with: message) }
         prompts.onError = { [weak self] message in self?.notify(message) }
         synonyms.onError = { [weak self] message in self?.notify(message) }
         highlights.onError = { [weak self] message in self?.notify(message) }
         highlights.onNotice = { [weak self] message in self?.notify(message) }
+        highlights.onNote = { [weak self] note in
+            guard let self else { return }
+            echo.showHighlightNote(synonyms.state == .idle && prompts.state == .idle ? note : nil)
+        }
         toolbarSettings.onChange = { [weak self] buttons in self?.highlights.configurationChanged(buttons) }
     }
 

@@ -283,23 +283,28 @@ enum SelfCheck {
             await settle()
             require(!model.showDrafts, "Command-D closes the drawer")
             require(abs(window.frame.width - (1000 - ComposerWindowSizing.drawerWidth)) < 1, "closing respects resizing while drawer is open")
-            await promptInterface(model: model, window: window, service: promptService) { require($0, $1) }
-            await replyLayoutInterface(model: model, window: window, service: promptService) { require($0, $1) }
-            await synonymInterface(model: model, window: window, service: synonymService) { require($0, $1) }
-            await sharedContextInterface(model: model, window: window, synonyms: synonymService,
-                                         highlights: highlightService, prompts: promptService) { require($0, $1) }
+            let notesOnly = CommandLine.arguments.contains("--highlight-notes-only")
+            if !notesOnly {
+                await promptInterface(model: model, window: window, service: promptService) { require($0, $1) }
+                await replyLayoutInterface(model: model, window: window, service: promptService) { require($0, $1) }
+                await synonymInterface(model: model, window: window, service: synonymService) { require($0, $1) }
+                await sharedContextInterface(model: model, window: window, synonyms: synonymService,
+                                             highlights: highlightService, prompts: promptService) { require($0, $1) }
+            }
+            await highlightNotesInterface(model: model, window: window, service: highlightService) { require($0, $1) }
             let synonymsOnly = CommandLine.arguments.contains("--synonyms-only")
-            if !synonymsOnly {
+            if !synonymsOnly && !notesOnly {
                 await highlightInterface(model: model, window: window, service: highlightService) { require($0, $1) }
             }
-            if !synonymsOnly || CommandLine.arguments.contains("--with-cli-checks") {
+            if (!synonymsOnly && !notesOnly) || CommandLine.arguments.contains("--with-cli-checks") {
                 await commandChecks(log: model.modelLog) { require($0, $1) }
             }
-            await modelLogInterface(model: model, window: window) { require($0, $1) }
+            if !notesOnly { await modelLogInterface(model: model, window: window) { require($0, $1) } }
             require(model.save(), "edited content persists")
             UserDefaults.standard.removePersistentDomain(forName: model.storage.directory.lastPathComponent)
             try? FileManager.default.removeItem(at: model.storage.directory)
-            let coverage = synonymsOnly ? "editing, drafts drawer, sizing, minibuffer prompts, synonym overlay, and persistence" :
+            let coverage = notesOnly ? "editing, drafts drawer, sizing, highlight notes, minibuffer priority, and persistence" :
+                synonymsOnly ? "editing, drafts drawer, sizing, minibuffer prompts, synonym overlay, and persistence" :
                 "editing, drafts drawer, sizing, minibuffer prompts, synonyms, highlights, settings, CLI lifecycle, focus, and persistence"
             print("Passed \(checks) native UI checks: \(coverage).")
             exit(0)
@@ -641,6 +646,23 @@ enum SelfCheck {
             let ranges = try matches.ranges(in: text)
             check(ranges == [NSRange(location: 10, length: 5), NSRange(location: 17, length: 1), NSRange(location: 19, length: 2)],
                   "highlight quotes resolve repeated text, emoji offsets, and distinct Unicode encodings")
+            let annotated = try JSONDecoder().decode(HighlightMatches.self, from: Data("""
+            {"matches":[{"text":"clear","occurrence":2,"note":" Second occurrence. "},{"text":"é","occurrence":1},
+                        {"text":"clear","occurrence":1,"note":"First occurrence."},{"text":"é","occurrence":1,"note":"  \\n "}]}
+            """.utf8))
+            let resolved = try annotated.intervals(in: text)
+            check(resolved.map(\.note) == ["First occurrence.", "Second occurrence.", nil, nil] &&
+                  resolved.map(\.range) == [NSRange(location: 3, length: 5)] + ranges,
+                  "optional interval notes stay paired with exact occurrences when results are sorted; empty notes are omitted")
+            let shifted = HighlightEdit(range: NSRange(location: 0, length: 0), replacementLength: 3).applying(to: resolved)
+            let edited = HighlightEdit(range: NSRange(location: 7, length: 1), replacementLength: 2).applying(to: shifted)
+            check(shifted[1].note == "Second occurrence." && shifted[1].range.location == 13 &&
+                  edited.first?.note == "Second occurrence." && edited.first?.range.location == 14,
+                  "edits shift notes with their intervals and remove the note when its span is invalidated")
+            do {
+                _ = try JSONDecoder().decode(HighlightMatches.self, from: Data(#"{"matches":[{"text":"clear","occurrence":1,"note":12}]}"#.utf8))
+                check(false, "non-text interval notes must fail")
+            } catch { check(true, "wrongly typed interval notes fail decoding instead of losing their metadata") }
             for invalid in [
                 HighlightMatches(matches: [.init(text: "absent", occurrence: 1)]),
                 HighlightMatches(matches: [.init(text: "clear", occurrence: 3)]),
@@ -1140,6 +1162,170 @@ enum SelfCheck {
         check(highlights.contexts.count == requests && model.highlights.state == .idle && model.echo.message != nil,
               "an empty paragraph reports an error instead of silently highlighting the whole post")
         model.echo.clear()
+    }
+
+    @MainActor private static func highlightNotesInterface(model: ComposerModel, window: NSWindow, service: HighlightStub,
+                                                          check: (Bool, String) -> Void) async {
+        func settle() async { try? await Task.sleep(for: .milliseconds(350)) }
+        func activateWindow() async {
+            if !window.isKeyWindow {
+                NSApp.activate(ignoringOtherApps: true)
+                window.makeKeyAndOrderFront(nil)
+                await settle()
+            }
+            check(window.isKeyWindow, "native highlight-note input requires a key window; macOS must allow app activation")
+        }
+        func press(_ text: String, code: UInt16) async {
+            await activateWindow()
+            let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+                                        timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                                        context: nil, characters: text, charactersIgnoringModifiers: text, isARepeat: false, keyCode: code)!
+            NSApp.postEvent(event, atStart: false)
+            await settle()
+        }
+        func hover(_ point: NSPoint) async {
+            await activateWindow()
+            let event = NSEvent.mouseEvent(with: .mouseMoved, location: point, modifierFlags: [],
+                                          timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                                          context: nil, eventNumber: 0, clickCount: 0, pressure: 0)!
+            NSApp.postEvent(event, atStart: false)
+            await settle()
+        }
+        model.echo.clear()
+        model.newDraft()
+        await settle()
+        guard let editor = model.activeEditor, let button = model.toolbarSettings.buttons.first else {
+            check(false, "interval notes have a native editor and button"); return
+        }
+        let oldResult = service.result
+        defer {
+            model.highlights.dismiss()
+            service.result = oldResult
+            service.delay = .milliseconds(100)
+            service.contexts.removeAll(); service.prompts.removeAll(); service.models.removeAll(); service.efforts.removeAll()
+        }
+        let source = "😀 Often we look for a silver bullet. Then we try to move the needle."
+        let first = (source as NSString).range(of: "silver bullet")
+        let second = (source as NSString).range(of: "move the needle")
+        let inner = (source as NSString).range(of: "needle")
+        let firstNote = "Describe the specific solution instead of promising a silver bullet. " +
+            "For example, name the change, explain which problem it solves, and acknowledge the trade-off that remains."
+        let secondNote = "Say what will improve and by how much."
+        let innerNote = "Name the metric you mean."
+        service.result = HighlightMatches(matches: [
+            .init(text: "move the needle", occurrence: 1, note: secondNote),
+            .init(text: "silver bullet", occurrence: 1, note: firstNote),
+            .init(text: "Often", occurrence: 1),
+            .init(text: "needle", occurrence: 1, note: innerNote)
+        ])
+        editor.insertText(source, replacementRange: NSRange(location: 0, length: (editor.string as NSString).length))
+        editor.setSelectedRange(NSRange(location: 0, length: 0))
+        await settle()
+        let frame = window.frame
+        let textRect = editor.firstRect(forCharacterRange: first, actualRange: nil)
+        model.toggleHighlights(button)
+        await settle()
+        check(model.highlights.state == .ready && model.echo.message == nil && model.highlights.intervals.count == 4,
+              "intervals with and without optional notes coexist without displaying an unrelated note")
+        func point(at index: Int) -> NSPoint {
+            let layout = editor.layoutManager!, container = editor.textContainer!
+            let glyphs = layout.glyphRange(forCharacterRange: NSRange(location: index, length: 1), actualCharacterRange: nil)
+            let rect = layout.boundingRect(forGlyphRange: glyphs, in: container)
+            return editor.convert(NSPoint(x: rect.midX + editor.textContainerOrigin.x, y: rect.midY + editor.textContainerOrigin.y), to: nil)
+        }
+        editor.setSelectedRange(NSRange(location: first.location - 1, length: 0))
+        await press("\u{f703}", code: 124)
+        check(model.echo.message == firstNote && model.echo.wrapsMessage && window.firstResponder === editor &&
+              window.frame == frame && editor.string == source && editor.firstRect(forCharacterRange: first, actualRange: nil) == textRect &&
+              (echoHeight(in: window) ?? 0) > ComposerWindowSizing.echoAreaHeight,
+              "moving the caret into an interval shows its wrapped note without changing text, window geometry, or focus")
+        await press("\u{1b}", code: 53)
+        check(model.echo.message == nil && editor.selectedRange().location == first.location &&
+              model.highlights.activeButtonID == button.id,
+              "Escape keeps a caret note dismissed through footer layout without moving the cursor or disabling highlights")
+        editor.setSelectedRange(NSRange(location: NSMaxRange(first), length: 0))
+        await settle()
+        check(model.echo.message == nil, "the interval's end boundary is outside the caret note")
+        editor.setSelectedRange(NSRange(location: 4, length: 0))
+        check(model.echo.message == nil, "an unannotated highlight does not display another interval's note")
+        editor.setSelectedRange(NSRange(location: 0, length: 0))
+        await hover(point(at: NSMaxRange(first) - 1))
+        check(model.echo.message == firstNote, "hovering the last character shows its wrapped interval note through footer layout")
+        await hover(point(at: second.location + 1))
+        check(model.echo.message == secondNote && editor.selectedRange().location == 0 && window.firstResponder === editor,
+              "native mouse movement over a highlighted glyph shows its own note without moving the caret")
+        await hover(point(at: inner.location + 1))
+        check(model.echo.message == innerNote, "overlapping annotations show the most specific matching interval")
+        let linePoint = editor.convert(point(at: second.location), from: nil)
+        await hover(editor.convert(NSPoint(x: editor.bounds.maxX - 1, y: linePoint.y), to: nil))
+        check(model.echo.message == nil, "empty space after a line does not count as hovering its nearest glyph")
+        await hover(point(at: first.location + 1))
+        await press("\u{1b}", code: 53)
+        check(model.echo.message == nil && model.highlights.activeButtonID == button.id,
+              "Escape clears the note without disabling highlights")
+        await hover(point(at: second.location + 1))
+        await hover(NSPoint(x: 16, y: 40))
+        check(model.echo.message == nil, "leaving the editor clears a hover note when the caret is outside annotations")
+        editor.setSelectedRange(NSRange(location: first.location + 1, length: 0))
+        model.notify("Keep this error")
+        await hover(point(at: second.location + 1))
+        await hover(NSPoint(x: 16, y: 40))
+        check(model.echo.message == "Keep this error", "hover notes neither overwrite nor clear an unrelated status or error")
+        model.echo.clear()
+        editor.setSelectedRange(NSRange(location: 0, length: 0))
+        model.echo.confirm("Keep this question (y/n)") {}
+        await hover(point(at: first.location + 1))
+        check(model.echo.expectsInput && !model.echo.readsText && model.echo.message == "Keep this question (y/n)",
+              "hovering annotations cannot replace a minibuffer confirmation")
+        model.echo.clear()
+        await settle()
+        model.readPrompt()
+        model.echo.inputText = "Keep this prompt"
+        await hover(point(at: second.location + 1))
+        check(model.echo.readsText && model.echo.inputText == "Keep this prompt" && model.echo.message == "> ",
+              "hovering annotations cannot cancel or replace an interactive conversation")
+        model.echo.clear()
+        editor.setSelectedRange(NSRange(location: first.location + 1, length: 0))
+        model.echo.clear()
+        model.synonyms.lookup(in: editor, model: model.synonymModel, effort: model.synonymEffort)
+        await settle()
+        await hover(point(at: second.location + 1))
+        check(model.synonyms.hasResults && model.echo.message == nil, "passive notes do not dismiss synonym results")
+        model.synonyms.dismiss()
+        editor.insertText("New ", replacementRange: NSRange(location: 0, length: 0))
+        editor.breakUndoCoalescing()
+        let shifted = (editor.string as NSString).range(of: "silver bullet")
+        editor.setSelectedRange(NSRange(location: shifted.location + 1, length: 0))
+        check(model.echo.message == firstNote, "a note follows its interval after preceding text is inserted")
+        editor.insertText("fresh idea", replacementRange: shifted)
+        editor.breakUndoCoalescing()
+        editor.setSelectedRange(NSRange(location: shifted.location + 1, length: 0))
+        check(model.echo.message == nil && !model.highlights.intervals.contains { $0.note == firstNote },
+              "replacing an annotated interval removes its note as well as its highlight")
+        editor.undoManager?.undo()
+        editor.setSelectedRange(NSRange(location: shifted.location + 1, length: 0))
+        check(model.echo.message == nil && !model.highlights.intervals.contains { $0.note == firstNote },
+              "undo does not resurrect invalidated interval notes")
+        check(service.contexts.count == 1, "caret, hover, and edit inspection never reruns the model")
+        let currentSecond = (editor.string as NSString).range(of: "move the needle")
+        editor.setSelectedRange(NSRange(location: currentSecond.location + 1, length: 0))
+        model.toggleHighlights(button)
+        check(model.echo.message == nil && model.highlights.intervals.isEmpty, "unpressing the button clears its visible note")
+        editor.insertText(source, replacementRange: NSRange(location: 0, length: (editor.string as NSString).length))
+        editor.setSelectedRange(NSRange(location: 0, length: 0))
+        service.delay = .milliseconds(600)
+        model.toggleHighlights(button)
+        try? await Task.sleep(for: .milliseconds(50))
+        editor.insertText("New ", replacementRange: NSRange(location: 0, length: 0))
+        editor.insertText("x", replacementRange: NSRange(location: first.location + 5, length: 0))
+        try? await Task.sleep(for: .milliseconds(700))
+        let finalSecond = (editor.string as NSString).range(of: "move the needle")
+        editor.setSelectedRange(NSRange(location: finalSecond.location + 1, length: 0))
+        check(model.echo.message == secondNote && !model.highlights.intervals.contains { $0.note == firstNote },
+              "pending results preserve notes on shifted intervals and discard notes on spans edited while waiting")
+        model.newDraft()
+        await settle()
+        check(model.echo.message == nil && model.highlights.state == .idle, "switching drafts clears interval notes")
     }
 
     @MainActor private static func modelLogInterface(model: ComposerModel, window: NSWindow,
@@ -1939,7 +2125,7 @@ enum SelfCheck {
                         printf '%s' 'Malformed model output'
                         printf '%s' 'Full diagnostic output' >&2
                     elif printf '%s' "$schema" | grep -q '"matches"'; then
-                        printf '%s' '{"type":"result","is_error":false,"structured_output":{"matches":[{"text":"clear","occurrence":2}]}}'
+                        printf '%s' '{"type":"result","is_error":false,"structured_output":{"matches":[{"text":"clear","occurrence":2,"note":"Try a more specific word."}]}}'
                     elif printf '%s' "$schema" | grep -q '"answer"'; then
                         [ -n "$session" ] || exit 6
                         transcript="$CLAUDE_CONFIG_DIR/session-$session"
@@ -1989,6 +2175,8 @@ enum SelfCheck {
             let highlightContext = ModelContext.capture(text: highlightedText, selection: (highlightedText as NSString).range(of: "clear"))!
             let highlights = try await cli.highlights(context: highlightContext, prompt: highlightPrompt, model: .opus, effort: .xhigh)
             check(try highlights.ranges(in: highlightedText) == [NSRange(location: 13, length: 5)], "CLI highlight response resolves exact Unicode-aware intervals")
+            check(try highlights.intervals(in: highlightedText).first?.note == "Try a more specific word.",
+                  "the CLI decodes optional per-interval notes without confusing them with quoted text")
             let highlightRequest = try JSONDecoder().decode([String: String].self, from: Data(contentsOf: fixture.appendingPathComponent("profile/request.json")))
             check(highlightRequest == ["prompt": highlightPrompt, "target": "clear", "text": highlightedText],
                   "highlight CLI uses the shared prompt, target, and paragraph envelope without shell interpolation")

@@ -68,6 +68,7 @@ struct GrowingTextView: NSViewRepresentable {
                   model.draft.posts.contains(where: { $0.id == postID }) else { return }
             model.activePostID = postID
             model.activeEditor = view
+            model.highlights.selectionChanged(in: view)
         }
         view.onSubmit = { [weak model] in model?.prepareHandoff() }
         view.onSynonymLookup = { [weak model, weak view] in
@@ -77,6 +78,11 @@ struct GrowingTextView: NSViewRepresentable {
         view.onSelectionChange = { [weak model, weak view] in
             guard let view else { return }
             model?.synonyms.invalidateIfChanged(in: view)
+            model?.highlights.selectionChanged(in: view)
+        }
+        view.onHighlightHover = { [weak model, weak view] index in
+            guard let view else { return }
+            model?.highlights.hoverChanged(at: index, in: view)
         }
     }
 
@@ -148,9 +154,48 @@ final class ComposerTextView: NSTextView {
     var onSynonymLookup: (() -> Void)?
     var onSelectionChange: (() -> Void)?
     var onResize: (() -> Void)?
+    var onHighlightHover: ((Int?) -> Void)?
+    private var highlightTrackingArea: NSTrackingArea?
     var didRequestFocus = false
     var highlightRanges: [NSRange] = []
     var highlightStyle = HighlightStyle()
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let highlightTrackingArea { removeTrackingArea(highlightTrackingArea) }
+        let area = NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+                                  owner: self, userInfo: nil)
+        addTrackingArea(area)
+        highlightTrackingArea = area
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        super.mouseMoved(with: event)
+        onHighlightHover?(highlightCharacter(at: event.locationInWindow))
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        super.mouseEntered(with: event)
+        onHighlightHover?(highlightCharacter(at: event.locationInWindow))
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        super.mouseExited(with: event)
+        onHighlightHover?(nil)
+    }
+
+    private func highlightCharacter(at location: NSPoint) -> Int? {
+        guard let content = window?.contentView, let layout = layoutManager, let container = textContainer,
+              layout.numberOfGlyphs > 0 else { return nil }
+        let hitPoint = content.superview?.convert(location, from: nil) ?? location
+        guard content.hitTest(hitPoint) === self else { return nil }
+        let point = convert(location, from: nil)
+        let textPoint = NSPoint(x: point.x - textContainerOrigin.x, y: point.y - textContainerOrigin.y)
+        let glyph = layout.glyphIndex(for: textPoint, in: container)
+        guard glyph < layout.numberOfGlyphs,
+              layout.boundingRect(forGlyphRange: NSRange(location: glyph, length: 1), in: container).contains(textPoint) else { return nil }
+        return layout.characterIndexForGlyph(at: glyph)
+    }
 
     func refreshHighlights() {
         guard let layoutManager else { return }

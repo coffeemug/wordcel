@@ -151,7 +151,7 @@ final class ClaudeCLI: SynonymService, HighlightService, PromptService {
                                                        systemPrompt: Self.systemPrompt, schema: Self.schema, model: model, effort: effort))
     }
 
-    static let highlightSchema = #"{"type":"object","properties":{"matches":{"type":"array","items":{"type":"object","properties":{"text":{"type":"string","minLength":1},"occurrence":{"type":"integer","minimum":1}},"required":["text","occurrence"],"additionalProperties":false}}},"required":["matches"],"additionalProperties":false}"#
+    static let highlightSchema = #"{"type":"object","properties":{"matches":{"type":"array","items":{"type":"object","properties":{"text":{"type":"string","minLength":1},"occurrence":{"type":"integer","minimum":1},"note":{"type":"string"}},"required":["text","occurrence"],"additionalProperties":false}}},"required":["matches"],"additionalProperties":false}"#
     static let highlightSystemPrompt = """
     Identify intervals within the supplied context according to the user's highlighting rule in "prompt".
     \(ModelContext.instructions)
@@ -161,6 +161,9 @@ final class ClaudeCLI: SynonymService, HighlightService, PromptService {
     Each match identifies just the text to highlight. Do not include surrounding context unless it also qualifies.
     Identify all qualifying occurrences, including repeated words. Never rewrite, correct, normalize, or invent text.
     Do not return duplicate intervals. Return an empty matches array when nothing qualifies.
+    Each match may optionally include "note": plain-text explanation, alternatives, or suggestions specific to that span.
+    If the user's prompt requests advice or alternatives, put them in the corresponding match's "note", never in its quoted "text".
+    Keep notes concise unless the user requests more detail. Omit "note" when there is nothing useful to add.
     Return only the requested structured output. Do not use tools.
     """
 

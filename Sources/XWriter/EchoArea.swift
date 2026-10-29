@@ -9,6 +9,7 @@ final class EchoBuffer: ObservableObject {
             let dismiss = onDismissInput
             onDismissInput = nil
             input = nil
+            isHighlightNote = false
             isWaiting = false
             wrapsMessage = false
             displayedMessage = newValue
@@ -25,6 +26,7 @@ final class EchoBuffer: ObservableObject {
     weak var textField: NSTextField?
     weak var areaView: NSView?
     private var onDismissInput: (() -> Void)?
+    private var isHighlightNote = false
     var expectsInput: Bool { input != nil }
     var readsText: Bool {
         if case .text = input { return true }
@@ -57,6 +59,14 @@ final class EchoBuffer: ObservableObject {
         displayedMessage = reply
         wrapsMessage = true
         isWaiting = false
+    }
+
+    func showHighlightNote(_ note: String?) {
+        guard !expectsInput, displayedMessage == nil || isHighlightNote else { return }
+        guard displayedMessage != note else { return }
+        isHighlightNote = note != nil
+        displayedMessage = note
+        wrapsMessage = note != nil
     }
 
     func submit() {

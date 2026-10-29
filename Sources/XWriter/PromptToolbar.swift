@@ -324,6 +324,8 @@ private struct PromptButtonEditor: View {
                     .accessibilityLabel("Highlighting prompt")
                 Text("Describe what to highlight. The app supplies the cursor word or selection and its paragraph. A selection spanning paragraphs is analyzed on its own. Highlights stay within that context; you don't need to write JSON.")
                     .font(.system(size: 12)).foregroundStyle(Theme.secondary)
+                Text("You can also ask for explanations or alternatives for each match. Hover over a highlight or move the text cursor into it to read its note in the minibuffer.")
+                    .font(.system(size: 12)).foregroundStyle(Theme.secondary)
                 Divider().padding(.vertical, 4)
                 HighlightStyleEditor(style: $button.style, onError: onError)
                 Text("Style changes apply immediately without another model call. Uses the composer's model and reasoning setting. Settings save automatically.")

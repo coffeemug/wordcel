@@ -114,6 +114,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
+        window.acceptsMouseMovedEvents = true
         window.isReleasedWhenClosed = false
         window.backgroundColor = Theme.backgroundNS
         window.minSize = NSSize(width: ComposerWindowSizing.minimumWidth, height: 300 + ComposerWindowSizing.echoAreaHeight)
@@ -173,6 +174,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 return nil
             }
             let hadMessage = self.model.echo.message != nil
+            self.model.highlights.clearInspection()
             self.model.echo.clear()
             guard event.type == .keyDown, event.window === self.window else { return event }
             if (event.keyCode == 36 || event.keyCode == 76),
@@ -202,6 +204,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                    let action = item.action, ["undo:", "redo:", "cut:", "copy:", "paste:", "selectAll:"].contains(NSStringFromSelector(action)) {
                     return
                 }
+                self.model.highlights.clearInspection()
                 self.model.echo.clear()
             }
         }
