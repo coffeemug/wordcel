@@ -12,6 +12,10 @@ enum SelfCheck {
     @MainActor final class SynonymStub: SynonymService {
         static let lists = SynonymLists(latin: ["assist", "aid", "support", "succor", "sustain", "facilitate"],
                                        germanic: ["back", "bolster", "uphold", "boost", "further", "foster"])
+        static let expandedLists = SynonymLists(
+            latin: lists.latin + ["reinforce", "abet", "benefit", "accommodate", "contribute", "serve"],
+            germanic: lists.germanic + ["strengthen", "lift", "shield", "feed", "heal", "steady"])
+        var result = lists
         var authenticated = true
         var signIns = 0
         var targets: [String] = []
@@ -32,10 +36,11 @@ enum SelfCheck {
             sentences.append(sentence)
             models.append(model)
             efforts.append(effort)
+            let response = result
             do { try await Task.sleep(for: delay) }
             catch is CancellationError { if !ignoreCancellation { throw CancellationError() } }
             if let failure { throw failure }
-            return Self.lists
+            return response
         }
     }
 
@@ -402,6 +407,12 @@ enum SelfCheck {
             let response = ClaudeCommand.Result(status: 0, output: Data(#"{"type":"result","is_error":false,"structured_output":{"latin":["assist"],"germanic":["back"]}}"#.utf8))
             let lists = try ClaudeCLI.decode(response)
             check(lists.latin == ["assist"] && lists.germanic == ["back"], "Claude structured synonym output is decoded")
+            let expanded = SynonymStub.expandedLists
+            let expandedData = try JSONSerialization.data(withJSONObject: [
+                "type": "result", "is_error": false, "structured_output": ["latin": expanded.latin, "germanic": expanded.germanic]
+            ])
+            let expandedResult = try ClaudeCLI.decode(.init(status: 0, output: expandedData))
+            check(expandedResult == expanded, "all twelve alternatives in each group survive decoding and validation")
             for invalid in [
                 #"{"type":"result","is_error":false,"result":"No structured output"}"#,
                 #"{"type":"result","is_error":true,"result":"Usage limit reached"}"#,
@@ -413,8 +424,8 @@ enum SelfCheck {
                 #"{"type":"result","is_error":false,"structured_output":{"latin":[],"germanic":["write\u2010up"]}}"#,
                 #"{"type":"result","is_error":false,"structured_output":{"latin":["progress\u00a0report"],"germanic":[]}}"#,
                 #"{"type":"result","is_error":false,"structured_output":{"latin":["assist"],"germanic":["Assist"]}}"#,
-                #"{"type":"result","is_error":false,"structured_output":{"latin":["a","b","c","d","e","f","g"],"germanic":[]}}"#,
-                #"{"type":"result","is_error":false,"structured_output":{"latin":[],"germanic":["a","b","c","d","e","f","g"]}}"#
+                #"{"type":"result","is_error":false,"structured_output":{"latin":["a","b","c","d","e","f","g","h","i","j","k","l","m"],"germanic":[]}}"#,
+                #"{"type":"result","is_error":false,"structured_output":{"latin":[],"germanic":["a","b","c","d","e","f","g","h","i","j","k","l","m"]}}"#
             ] {
                 do {
                     _ = try ClaudeCLI.decode(ClaudeCommand.Result(status: 0, output: Data(invalid.utf8)))
@@ -841,7 +852,7 @@ enum SelfCheck {
         guard let expanded = echoHeight(in: window) else {
             check(false, "expanded reply has a visible minibuffer separator"); return
         }
-        check(model.echo.message == reply && expanded > SynonymEchoArea.resultsHeight,
+        check(model.echo.message == reply && expanded > SynonymEchoArea.minimumResultsHeight,
               "a model reply word-wraps into as many lines as needed instead of truncating or stopping at two lines")
         check(originalToolbar != nil && toolbarSnapshot(in: window, width: model.composerWidth, above: expanded) == originalToolbar,
               "the unchanged toolbar rises above the expanded reply")
@@ -1335,7 +1346,7 @@ enum SelfCheck {
         let ready = SynonymController.State.ready(SynonymStub.lists)
         check(model.synonyms.state == ready, "synonyms display both groups")
         check(service.targets.last == "Help" && service.sentences.last == "😀 Help, help.", "the word and its sentence are sent to Claude")
-        check(originalToolbar != nil && toolbarSnapshot(above: SynonymEchoArea.resultsHeight) == originalToolbar,
+        check(originalToolbar != nil && toolbarSnapshot(above: SynonymEchoArea.minimumResultsHeight) == originalToolbar,
               "the unchanged toolbar, counter, and Post button shift above the two-line minibuffer")
         check(window.frame == frame && geometry() == originalGeometry, "synonym rows preserve the window, editor frame, viewport, and scroll position")
         NSApp.postEvent(key("\u{1b}", code: 53, modifiers: []), atStart: false)
@@ -1347,6 +1358,42 @@ enum SelfCheck {
         scroll.postsFrameChangedNotifications = scrollPostedFrames
         scroll.contentView.postsBoundsChangedNotifications = clipPostedBounds
         check(layoutSamples.allSatisfy { $0 == originalGeometry }, "the editor never shifts during footer expansion or collapse")
+
+        service.result = SynonymStub.expandedLists
+        editor.keyDown(with: key(" ", code: 49))
+        try? await Task.sleep(for: .milliseconds(600))
+        guard let expandedHeight = echoHeight(in: window) else { check(false, "wrapped synonyms have a visible separator"); return }
+        check(model.synonyms.state == .ready(SynonymStub.expandedLists) && expandedHeight > SynonymEchoArea.minimumResultsHeight,
+              "twelve suggestions per group wrap onto extra lines (height: \(expandedHeight))")
+        let expandedToolbar = toolbarSnapshot(above: expandedHeight)
+        check(expandedToolbar == originalToolbar,
+              "the unchanged toolbar rises above the wrapped suggestions (height: \(expandedHeight))")
+        check(window.frame == frame && geometry() == originalGeometry && window.firstResponder === editor,
+              "wrapped synonyms preserve the editor, viewport, window, and focus")
+        window.setContentSize(NSSize(width: frame.width + 300, height: window.contentView!.bounds.height))
+        await settle()
+        check((echoHeight(in: window) ?? expandedHeight) < expandedHeight && model.synonyms.state == .ready(SynonymStub.expandedLists),
+              "wider windows fit more synonyms per line without another lookup")
+        window.setFrame(frame, display: true)
+        await settle()
+        await click(at: NSPoint(x: ComposerWindowSizing.textLeading + 43, y: 12))
+        let replacement = SynonymTarget.capture(text: editor.string, selection: NSRange(location: target.location + 1, length: 0))?.query ?? ""
+        check(SynonymStub.expandedLists.germanic.dropFirst(6).contains(replacement.lowercased()) &&
+              editor.string == "😀 \(replacement), help." && model.synonyms.state == .idle,
+              "clicking a Germanic suggestion on a wrapped line replaces only the selected word")
+        let replacedText = editor.string
+        editor.undoManager?.undo()
+        check(editor.string == "😀 Help, help.", "wrapped suggestions preserve native undo")
+        editor.undoManager?.redo()
+        check(editor.string == replacedText, "wrapped suggestions preserve native redo")
+        editor.undoManager?.undo()
+        editor.setSelectedRange(NSRange(location: target.location + 2, length: 0))
+        service.result = SynonymLists(latin: [], germanic: ["back"])
+        editor.keyDown(with: key(" ", code: 49))
+        await settle()
+        check(model.synonyms.state == .ready(service.result) && echoHeight(in: window) == SynonymEchoArea.minimumResultsHeight,
+              "short and empty groups return to the compact two-row layout")
+        service.result = SynonymStub.lists
         editor.keyDown(with: key(" ", code: 49))
         await settle()
 

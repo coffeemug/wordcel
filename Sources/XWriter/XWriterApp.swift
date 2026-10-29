@@ -69,6 +69,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let isTesting = snapshotPath != nil || CommandLine.arguments.contains("--ui-test")
         let isolatedDirectory = isTesting ? FileManager.default.temporaryDirectory.appendingPathComponent("XWriter-preview-\(UUID())") : nil
         let previewSynonyms = isTesting ? SelfCheck.SynonymStub() : nil
+        if snapshotPath != nil { previewSynonyms?.result = SelfCheck.SynonymStub.expandedLists }
         let previewHighlights = isTesting ? SelfCheck.HighlightStub() : nil
         let previewPrompts = isTesting ? SelfCheck.PromptStub() : nil
         if isTesting && CommandLine.arguments.contains("--loading") {

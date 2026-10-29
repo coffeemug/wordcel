@@ -3,13 +3,14 @@ import Combine
 import NaturalLanguage
 
 struct SynonymLists: Codable, Equatable {
+    static let maximumCount = 12
     var latin: [String]
     var germanic: [String]
 
     func validated() throws -> SynonymLists {
         let allowed = CharacterSet.letters.union(.nonBaseCharacters).union(CharacterSet(charactersIn: "'\u{2019}"))
         let words = latin + germanic
-        guard latin.count <= 6, germanic.count <= 6,
+        guard latin.count <= Self.maximumCount, germanic.count <= Self.maximumCount,
               words.allSatisfy({ !$0.isEmpty && $0.count <= 48 &&
                   $0.unicodeScalars.contains(where: CharacterSet.letters.contains) &&
                   $0.unicodeScalars.allSatisfy(allowed.contains) }) else { throw ClaudeCLIError.invalidResponse }
