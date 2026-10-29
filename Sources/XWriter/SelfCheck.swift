@@ -75,14 +75,18 @@ enum SelfCheck {
         var texts: [String?] = []
         var models: [ClaudeModel] = []
         var efforts: [ClaudeEffort] = []
+        var conversationIDs: [UUID] = []
+        var resumptions: [Bool] = []
         var delay = Duration.milliseconds(100)
         var ignoreCancellation = false
         var failure: Error?
         var result = "A brief answer."
         func isAuthenticated() async throws -> Bool { authenticated }
         func signIn() async throws { signIns += 1; authenticated = true }
-        func reply(to prompt: String, text: String?, model: ClaudeModel, effort: ClaudeEffort) async throws -> String {
+        func reply(to prompt: String, text: String?, conversation: PromptConversation,
+                   model: ClaudeModel, effort: ClaudeEffort) async throws -> String {
             prompts.append(prompt); texts.append(text); models.append(model); efforts.append(effort)
+            conversationIDs.append(conversation.id); resumptions.append(conversation.hasReply)
             let answer = result
             do { try await Task.sleep(for: delay) }
             catch is CancellationError { if !ignoreCancellation { throw CancellationError() } }
@@ -706,9 +710,10 @@ enum SelfCheck {
             try? await Task.sleep(for: delay)
         }
         func begin(_ text: String) async {
+            if model.echo.readsText { await press("\u{1b}", code: 53) }
             await press("\r", code: 36, modifiers: .control)
             guard let input = model.echo.textField?.currentEditor() as? NSTextView else {
-                check(false, "minibuffer has a native text editor")
+                check(false, "minibuffer has a native text editor for '\(text)' (readsText: \(model.echo.readsText), waiting: \(model.echo.isWaiting), field: \(String(describing: model.echo.textField)), responder: \(String(describing: window.firstResponder)))")
                 return
             }
             input.insertText(text, replacementRange: input.selectedRange())
@@ -765,16 +770,37 @@ enum SelfCheck {
         input.insertText("Explain this", replacementRange: input.selectedRange())
         service.delay = .milliseconds(600)
         await press("\r", code: 36)
-        check(model.prompts.state == .loading && !model.echo.expectsInput && window.firstResponder === editor &&
+        check(model.prompts.state == .loading && model.echo.isWaiting && model.echo.expectsInput && window.firstResponder !== editor &&
               service.prompts == ["Explain this"] && service.texts == ["el"] &&
               service.models == [model.synonymModel] && service.efforts == [model.synonymEffort] && editor.string == source,
               "Enter submits the exact selection and prompt using the configured model without editing the post")
         await press("x", code: 7)
         try? await Task.sleep(for: .milliseconds(600))
-        check(model.echo.message == service.result && model.prompts.state == .idle && window.firstResponder === editor &&
-              editor.string == (source as NSString).replacingCharacters(in: selection, with: "x") &&
+        check(model.echo.message == service.result && model.prompts.state == .idle && model.echo.readsText && !model.echo.isWaiting &&
+              model.echo.inputText.isEmpty && model.echo.textField?.currentEditor() === window.firstResponder &&
+              editor.string == source && editor.selectedRange() == selection &&
               window.attachedSheet == nil && NSApp.modalWindow == nil,
-              "a concise model reply appears as a message while the post remains editable during the request")
+              "a reply appears above a fresh focused prompt; keys during the request cannot edit the post")
+        if let area = model.echo.areaView {
+            await click(area.convert(NSPoint(x: ComposerWindowSizing.textLeading + 20, y: area.bounds.height - 12), to: nil))
+        }
+        check(model.echo.readsText && model.echo.message == service.result && model.echo.textField?.currentEditor() === window.firstResponder,
+              "clicking the displayed reply leaves the conversation and prompt focus intact")
+        let firstConversation = service.conversationIDs[0]
+        service.result = "A follow-up answer."
+        service.delay = .milliseconds(100)
+        if let followUp = model.echo.textField?.currentEditor() as? NSTextView {
+            followUp.insertText("Why?", replacementRange: followUp.selectedRange())
+        } else { check(false, "follow-up prompt has a native editor") }
+        await press("\r", code: 36)
+        await settle()
+        check(service.prompts == ["Explain this", "Why?"] && service.texts == ["el", "el"] &&
+              service.conversationIDs == [firstConversation, firstConversation] && service.resumptions == [false, true] &&
+              model.echo.message == service.result && model.echo.inputText.isEmpty && model.echo.readsText,
+              "a follow-up resumes the same conversation with the original exact selection and replaces the displayed reply")
+        await press("\u{1b}", code: 53)
+        check(model.echo.message == nil && !model.echo.expectsInput && window.firstResponder === editor && editor.selectedRange() == selection,
+              "Escape ends a completed conversation and restores the original editor selection")
         editor.insertText(source, replacementRange: NSRange(location: 0, length: (editor.string as NSString).length))
         editor.setSelectedRange(NSRange(location: word.location + 2, length: 0))
         service.delay = .milliseconds(100)
@@ -782,8 +808,9 @@ enum SelfCheck {
         await begin("Define it")
         await press("\r", code: 36)
         await settle()
-        check(service.texts.last == "help" && service.signIns == 1 && model.echo.message == service.result,
-              "an unselected cursor sends its word and uses subscription sign-in when needed")
+        check(service.texts.last == "help" && service.signIns == 1 && model.echo.message == service.result &&
+              service.conversationIDs.last != firstConversation && service.resumptions.last == false,
+              "a new conversation starts fresh with the cursor word and subscription sign-in when needed")
 
         service.delay = .seconds(1)
         service.ignoreCancellation = true
@@ -801,13 +828,26 @@ enum SelfCheck {
         await settle()
         check(model.prompts.state == .idle && model.echo.message == nil && window.firstResponder === editor,
               "Escape also cancels a running prompt and suppresses late replies")
+        await begin("Cancel pending by clicking")
+        await press("\r", code: 36)
+        await click(editor.convert(NSPoint(x: 12, y: 12), to: nil))
+        check(model.prompts.state == .idle && !model.echo.expectsInput && model.echo.message == nil && window.firstResponder === editor,
+              "clicking the editor cancels a pending conversation even when the service ignores cancellation")
+        await begin("Replaced request")
+        await press("\r", code: 36)
+        model.notify("A different operation")
+        await settle()
+        check(model.echo.message == "A different operation" && !model.echo.expectsInput && model.prompts.state == .idle,
+              "an unrelated message ends the conversation and cannot be overwritten by its pending reply")
         service.ignoreCancellation = false
         service.delay = .milliseconds(100)
         let requests = service.prompts.count
         await begin("")
+        let rejections = model.echo.rejectedInputCount
         await press("\r", code: 36)
-        check(service.prompts.count == requests && model.echo.message == "Type a prompt before pressing Enter.",
-              "an empty command reports an input error without invoking the model")
+        check(service.prompts.count == requests && model.echo.readsText && !model.echo.isWaiting &&
+              model.echo.rejectedInputCount == rejections + 1,
+              "an empty command blinks the prompt without invoking the model or discarding the conversation")
         service.failure = ClaudeCLIError.failed("Synthetic prompt failure")
         await begin("Fail")
         await press("\r", code: 36)
@@ -847,8 +887,10 @@ enum SelfCheck {
         let reply = "A clear sentence gives the reader one idea at a time, choosing familiar words and placing the important point early. " +
             "Remove repeated qualifications and unnecessary introductions, but keep enough detail to preserve the meaning, rhythm, and tone of the original thought."
         service.result = reply
-        model.prompts.send("Explain clear writing", text: "help", model: model.synonymModel, effort: model.synonymEffort)
-        await settle()
+        model.readPrompt()
+        model.echo.inputText = "Explain clear writing"
+        model.echo.submit()
+        try? await Task.sleep(for: .milliseconds(600))
         guard let expanded = echoHeight(in: window) else {
             check(false, "expanded reply has a visible minibuffer separator"); return
         }
@@ -856,8 +898,22 @@ enum SelfCheck {
               "a model reply word-wraps into as many lines as needed instead of truncating or stopping at two lines")
         check(originalToolbar != nil && toolbarSnapshot(in: window, width: model.composerWidth, above: expanded) == originalToolbar,
               "the unchanged toolbar rises above the expanded reply")
-        check(window.frame == frame && geometry() == originalGeometry && window.firstResponder === editor,
-              "reply expansion preserves window size, editor layout, scroll position, and focus")
+        check(window.frame == frame && geometry() == originalGeometry && model.echo.textField?.currentEditor() === window.firstResponder,
+              "conversation expansion preserves window size, editor layout, and scroll position while focusing the fresh prompt")
+        service.result = "A short follow-up."
+        model.echo.inputText = "Shorter?"
+        model.echo.submit()
+        await settle()
+        check(model.echo.message == service.result && echoHeight(in: window) == 2 * ComposerWindowSizing.echoAreaHeight - 1 &&
+              model.echo.readsText && window.frame == frame && geometry() == originalGeometry,
+              "a shorter follow-up shrinks to one reply and one prompt instead of retaining earlier replies")
+        service.result = reply
+        model.echo.inputText = "Explain further"
+        model.echo.submit()
+        try? await Task.sleep(for: .milliseconds(600))
+        check(model.echo.message == reply && echoHeight(in: window) == expanded &&
+              window.frame == frame && geometry() == originalGeometry,
+              "additional turns show only the latest response and prompt without accumulating visible history")
         let escape = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
                                      timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
                                      context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53)!
@@ -868,7 +924,8 @@ enum SelfCheck {
               "dismissing a reply returns the unchanged footer to its resting position")
         check(window.frame == frame && geometry() == originalGeometry,
               "dismissing a reply preserves the window and scrolled document")
-        model.echo.showReply(reply)
+        model.readPrompt()
+        model.echo.continueConversation(with: reply)
         await settle()
         window.setContentSize(NSSize(width: frame.width + 300, height: window.contentView!.bounds.height))
         await settle()
@@ -876,11 +933,11 @@ enum SelfCheck {
               window.frame.height == frame.height, "a wider window reflows the reply into fewer lines")
         window.setFrame(frame, display: true)
         await settle()
-        model.echo.showReply("A short reply.")
+        model.echo.continueConversation(with: "A short reply.")
         await settle()
-        check(echoHeight(in: window) == ComposerWindowSizing.echoAreaHeight,
-              "a reply that fits stays at the resting minibuffer height")
-        model.echo.showReply(reply)
+        check(echoHeight(in: window) == 2 * ComposerWindowSizing.echoAreaHeight - 1,
+              "a short conversational reply occupies just one response line and one prompt line")
+        model.echo.continueConversation(with: reply)
         await settle()
         model.notify(reply)
         await settle()
@@ -1675,8 +1732,16 @@ enum SelfCheck {
             [ -n "$CLAUDE_CONFIG_DIR" ] || exit 2
             [ -z "${ANTHROPIC_API_KEY-}" ] || exit 3
             action=
+            session=
+            resume=false
+            previous=
             for arg in "$@"; do
+                case "$previous" in
+                    --session-id) session="$arg";;
+                    --resume) session="$arg"; resume=true;;
+                esac
                 case "$arg" in status|login|--print) action="$arg";; esac
+                previous="$arg"
             done
             case "$action" in
                 status)
@@ -1694,7 +1759,21 @@ enum SelfCheck {
                     if grep -q '"rule"' "$CLAUDE_CONFIG_DIR/request.json"; then
                         printf '%s' '{"type":"result","is_error":false,"structured_output":{"matches":[{"text":"clear","occurrence":2}]}}'
                     elif grep -q '"prompt"' "$CLAUDE_CONFIG_DIR/request.json"; then
-                        printf '%s' '{"type":"result","is_error":false,"structured_output":{"answer":"A short response."}}'
+                        [ -n "$session" ] || exit 6
+                        transcript="$CLAUDE_CONFIG_DIR/session-$session"
+                        if [ "$resume" = true ]; then
+                            [ -f "$transcript" ] || exit 7
+                            [ "$(cat "$transcript.cwd")" = "$PWD" ] || exit 8
+                            cp "$transcript" "$CLAUDE_CONFIG_DIR/resumed.jsonl"
+                            answer='A continued response.'
+                        else
+                            [ ! -e "$transcript" ] || exit 9
+                            printf '%s' "$PWD" > "$transcript.cwd"
+                            answer='A short response.'
+                        fi
+                        cat "$CLAUDE_CONFIG_DIR/request.json" >> "$transcript"
+                        printf '\\n{"answer":"%s"}\\n' "$answer" >> "$transcript"
+                        printf '{"type":"result","is_error":false,"session_id":"%s","structured_output":{"answer":"%s"}}' "$session" "$answer"
                     else
                         printf '%s' '{"type":"result","is_error":false,"structured_output":{"latin":["assist"],"germanic":["back"]}}'
                     fi;;
@@ -1714,7 +1793,9 @@ enum SelfCheck {
                 let arguments = try String(contentsOf: fixture.appendingPathComponent("profile/arguments.txt"), encoding: .utf8).components(separatedBy: "\n")
                 let options = Array(zip(arguments, arguments.dropFirst()))
                 check(options.contains { $0.0 == "--model" && $0.1 == model.rawValue } &&
-                      options.contains { $0.0 == "--effort" && $0.1 == effort.rawValue }, "CLI requests \(model.title) with \(effort.title) effort")
+                      options.contains { $0.0 == "--effort" && $0.1 == effort.rawValue } &&
+                      arguments.contains("--no-session-persistence") && !arguments.contains("--resume"),
+                      "CLI requests \(model.title) with \(effort.title) effort without persisting synonym sessions")
             }
             let request = try JSONDecoder().decode([String: String].self, from: Data(contentsOf: fixture.appendingPathComponent("profile/request.json")))
             check(request == ["target": "lend a hand", "sentence": sentence], "CLI sends the whole phrase and its context as safely encoded JSON")
@@ -1729,22 +1810,58 @@ enum SelfCheck {
             check(highlightOptions.contains { $0 == "--model" && $1 == ClaudeModel.opus.rawValue } &&
                   highlightOptions.contains { $0 == "--effort" && $1 == ClaudeEffort.xhigh.rawValue } &&
                   highlightOptions.contains { $0 == "--json-schema" && $1 == ClaudeCLI.highlightSchema } &&
-                  highlightOptions.contains { $0 == "--tools" && $1.isEmpty }, "highlight CLI uses current model, effort, interval schema, and no tools")
+                  highlightOptions.contains { $0 == "--tools" && $1.isEmpty } &&
+                  highlightArguments.contains("--no-session-persistence"), "highlight CLI uses current model, effort, interval schema, no tools, and no persisted session")
             let prompt = #"Explain "this" briefly."#
             let selectedText = "😀 selected text\nwith a second line"
-            let reply = try await cli.reply(to: prompt, text: selectedText, model: .haiku, effort: .low)
+            let conversation = PromptConversation()
+            let reply = try await cli.reply(to: prompt, text: selectedText, conversation: conversation, model: .haiku, effort: .low)
             let promptRequest = try JSONDecoder().decode([String: String].self, from: Data(contentsOf: fixture.appendingPathComponent("profile/request.json")))
             check(reply == "A short response." && promptRequest == ["prompt": prompt, "text": selectedText],
                   "prompt CLI sends the user's exact request and selected Unicode text as JSON and decodes the reply")
             let promptArguments = try String(contentsOf: fixture.appendingPathComponent("profile/arguments.txt"), encoding: .utf8)
             check(promptArguments.contains(ClaudeCLI.promptSystemPrompt) && promptArguments.contains(ClaudeCLI.promptSchema) &&
                   promptArguments.contains("--model\n\(ClaudeModel.haiku.rawValue)") && promptArguments.contains("--effort\nlow") &&
-                  promptArguments.contains("--tools\n\n") && promptArguments.contains("--no-session-persistence") &&
+                  promptArguments.contains("--tools\n\n") && !promptArguments.contains("--no-session-persistence") &&
+                  promptArguments.contains("--session-id\n\(conversation.id.uuidString)") && !promptArguments.contains("--resume") &&
                   promptArguments.contains("--strict-mcp-config"),
-                  "prompt CLI requests a short response using the configured model and existing isolated, tool-free invocation")
-            _ = try await cli.reply(to: prompt, text: nil, model: .sonnet, effort: .medium)
+                  "prompt CLI starts an explicit isolated conversation with the configured model, short response schema, and no tools")
+            conversation.hasReply = true
+            let followUp = "Explain further"
+            let continued = try await cli.reply(to: followUp, text: selectedText, conversation: conversation, model: .haiku, effort: .low)
+            let resumeArguments = try String(contentsOf: fixture.appendingPathComponent("profile/arguments.txt"), encoding: .utf8)
+            func resumedHistory() throws -> [[String: String]] {
+                try String(contentsOf: fixture.appendingPathComponent("profile/resumed.jsonl"), encoding: .utf8)
+                    .split(separator: "\n").map { try JSONDecoder().decode([String: String].self, from: Data($0.utf8)) }
+            }
+            let previousTurns = [["prompt": prompt, "text": selectedText], ["answer": reply]]
+            check(try continued == "A continued response." && resumedHistory() == previousTurns &&
+                  resumeArguments.contains("--resume\n\(conversation.id.uuidString)") &&
+                  !resumeArguments.contains("--session-id") && !resumeArguments.contains("--continue"),
+                  "follow-up CLI invocation resumes the explicit session in the same directory with the original prompt, context, and assistant reply")
+            _ = try await cli.reply(to: "And why?", text: selectedText, conversation: conversation, model: .haiku, effort: .low)
+            check(try resumedHistory() == previousTurns + [["prompt": followUp, "text": selectedText], ["answer": continued]],
+                  "third CLI turn restores every earlier user and assistant turn, not just the previous response")
+            let cleanupDirectory: URL
+            do {
+                let fresh = PromptConversation()
+                cleanupDirectory = fresh.directory
+                let freshReply = try await cli.reply(to: prompt, text: nil, conversation: fresh, model: .sonnet, effort: .medium)
+                let freshArguments = try String(contentsOf: fixture.appendingPathComponent("profile/arguments.txt"), encoding: .utf8)
+                check(freshReply == reply && freshArguments.contains("--session-id\n\(fresh.id.uuidString)") &&
+                      !freshArguments.contains("--resume") && fresh.directory != conversation.directory,
+                      "a new conversation cannot inherit the previous conversation's transcript or working directory")
+            }
+            check(!FileManager.default.fileExists(atPath: cleanupDirectory.path), "ending a conversation removes its isolated temporary working directory")
             let noContext = try JSONDecoder().decode([String: String].self, from: Data(contentsOf: fixture.appendingPathComponent("profile/request.json")))
             check(noContext == ["prompt": prompt], "prompt CLI omits text when the editor has no cursor word")
+            do {
+                let wrongSession = Data("""
+                {"type":"result","is_error":false,"session_id":"\(UUID())","structured_output":{"answer":"Wrong conversation."}}
+                """.utf8)
+                _ = try ClaudeCLI.decodePrompt(.init(status: 0, output: wrongSession), sessionID: conversation.id)
+                check(false, "a reply from an unexpected session must fail")
+            } catch PromptError.invalidResponse { check(true, "a reply from an unexpected session is rejected") }
             let echo = try await ClaudeCommand().run(executable: URL(fileURLWithPath: "/bin/cat"), arguments: [],
                                                      environment: environment, input: #"{"word":"help"}"#, timeout: 5)
             check(echo.status == 0 && String(decoding: echo.output, as: UTF8.self) == #"{"word":"help"}"#, "CLI input and output are piped without a shell")

@@ -2,19 +2,29 @@ import SwiftUI
 
 @MainActor
 final class EchoBuffer: ObservableObject {
-    @Published var message: String? {
-        didSet {
+    @Published private var displayedMessage: String?
+    var message: String? {
+        get { displayedMessage }
+        set {
+            let dismiss = onDismissInput
+            onDismissInput = nil
             input = nil
+            isWaiting = false
             wrapsMessage = false
-            if message != nil { onMessage?() }
+            displayedMessage = newValue
+            dismiss?()
+            if newValue != nil { onMessage?() }
         }
     }
     @Published private(set) var wrapsMessage = false
+    @Published private(set) var isWaiting = false
     @Published private(set) var rejectedInputCount = 0
     @Published var inputText = ""
     var onMessage: (() -> Void)?
     var onInputChange: ((Bool) -> Void)?
     weak var textField: NSTextField?
+    weak var areaView: NSView?
+    private var onDismissInput: (() -> Void)?
     var expectsInput: Bool { input != nil }
     var readsText: Bool {
         if case .text = input { return true }
@@ -35,21 +45,30 @@ final class EchoBuffer: ObservableObject {
         input = .confirmation(onConfirm)
     }
 
-    func read(onSubmit: @escaping (String) -> Void) {
+    func read(onSubmit: @escaping (String) -> Void, onDismiss: @escaping () -> Void) {
         message = "> "
         inputText = ""
+        onDismissInput = onDismiss
         input = .text(onSubmit)
     }
 
-    func showReply(_ reply: String) {
-        message = reply
+    func continueConversation(with reply: String) {
+        guard readsText else { return }
+        displayedMessage = reply
         wrapsMessage = true
+        isWaiting = false
     }
 
     func submit() {
-        guard case .text(let onSubmit) = input else { return }
+        guard case .text(let onSubmit) = input, !isWaiting else { return }
         let text = inputText
-        clear()
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            rejectInput()
+            return
+        }
+        isWaiting = true
+        onInputChange?(true)
+        inputText = ""
         onSubmit(text)
     }
 
@@ -65,8 +84,7 @@ final class EchoBuffer: ObservableObject {
     }
 
     func clear() {
-        input = nil
-        if message != nil { message = nil }
+        message = nil
     }
 }
 
@@ -78,30 +96,37 @@ struct EchoArea: View {
     var body: some View {
         VStack(spacing: 0) {
             Rectangle().fill(Theme.border).frame(height: 1)
-            Group {
+            VStack(alignment: .leading, spacing: 0) {
                 if buffer.wrapsMessage {
                     Text(buffer.message ?? "")
                         .font(.system(size: 12))
                         .fixedSize(horizontal: false, vertical: true)
                         .padding(.vertical, 6)
                         .frame(minHeight: ComposerWindowSizing.echoAreaHeight - 1, alignment: .leading)
-                } else if buffer.readsText {
-                    HStack(spacing: 0) {
-                        Text("> ").font(.system(size: 12))
-                        EchoTextInput(buffer: buffer)
+                }
+                if buffer.readsText {
+                    Group {
+                        if buffer.isWaiting {
+                            Text(status ?? "Thinking...").font(.system(size: 12))
+                        } else {
+                            HStack(spacing: 0) {
+                                Text("> ").font(.system(size: 12))
+                                EchoTextInput(buffer: buffer)
+                            }
+                        }
                     }
                     .frame(height: ComposerWindowSizing.echoAreaHeight - 1)
-                } else {
+                } else if !buffer.wrapsMessage {
                     Text((buffer.message ?? status)?.components(separatedBy: .newlines).joined(separator: " ") ?? "")
                         .font(.system(size: 12)).lineLimit(1)
-                        .keyframeAnimator(initialValue: 1.0, trigger: buffer.rejectedInputCount) { [expectsInput = buffer.expectsInput] content, opacity in
-                            content.opacity(expectsInput ? opacity : 1)
-                        } keyframes: { _ in
-                            LinearKeyframe(0.2, duration: 0.08)
-                            LinearKeyframe(1, duration: 0.16)
-                        }
                         .frame(height: ComposerWindowSizing.echoAreaHeight - 1)
                 }
+            }
+            .keyframeAnimator(initialValue: 1.0, trigger: buffer.rejectedInputCount) { [expectsInput = buffer.expectsInput] content, opacity in
+                content.opacity(expectsInput ? opacity : 1)
+            } keyframes: { _ in
+                LinearKeyframe(0.2, duration: 0.08)
+                LinearKeyframe(1, duration: 0.16)
             }
             .padding(.leading, leadingInset).padding(.trailing, 12)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -109,12 +134,23 @@ struct EchoArea: View {
         .frame(minHeight: ComposerWindowSizing.echoAreaHeight)
         .fixedSize(horizontal: false, vertical: true)
         .background(Theme.background).foregroundStyle(Theme.secondary)
+        .background(EchoAreaBounds(buffer: buffer))
         .help(buffer.message ?? status ?? "")
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Echo area")
         .accessibilityValue(buffer.message ?? status ?? "No messages")
         .accessibilityIdentifier("echo-area")
     }
+}
+
+private struct EchoAreaBounds: NSViewRepresentable {
+    let buffer: EchoBuffer
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        buffer.areaView = view
+        return view
+    }
+    func updateNSView(_ view: NSView, context: Context) {}
 }
 
 private struct EchoTextInput: NSViewRepresentable {
@@ -139,6 +175,7 @@ private struct EchoTextInput: NSViewRepresentable {
 
     func updateNSView(_ field: InputField, context: Context) {
         if field.stringValue != buffer.inputText { field.stringValue = buffer.inputText }
+        field.focusInput()
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(buffer: buffer) }
@@ -147,10 +184,15 @@ private struct EchoTextInput: NSViewRepresentable {
         weak var buffer: EchoBuffer?
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
+            focusInput()
+        }
+
+        func focusInput() {
             guard window != nil else { return }
             DispatchQueue.main.async { [weak self] in
-                guard let self, let buffer, buffer.readsText, buffer.textField === self else { return }
-                window?.makeFirstResponder(self)
+                guard let self, let buffer, buffer.readsText, !buffer.isWaiting, buffer.textField === self,
+                      let window, window.firstResponder !== currentEditor() else { return }
+                window.makeFirstResponder(self)
             }
         }
     }

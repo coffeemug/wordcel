@@ -3,7 +3,21 @@ import Combine
 
 @MainActor
 protocol PromptService: ClaudeAuthentication {
-    func reply(to prompt: String, text: String?, model: ClaudeModel, effort: ClaudeEffort) async throws -> String
+    func reply(to prompt: String, text: String?, conversation: PromptConversation,
+               model: ClaudeModel, effort: ClaudeEffort) async throws -> String
+}
+
+@MainActor
+final class PromptConversation {
+    let id = UUID()
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("XWriter-conversation-\(UUID())")
+    var hasReply = false
+
+    deinit {
+        guard FileManager.default.fileExists(atPath: directory.path) else { return }
+        do { try FileManager.default.removeItem(at: directory) }
+        catch { NSLog("Couldn't remove temporary conversation directory: %@", error.localizedDescription) }
+    }
 }
 
 enum PromptError: LocalizedError {
@@ -48,7 +62,7 @@ final class PromptController: ObservableObject {
         return (text as NSString).substring(with: word)
     }
 
-    func send(_ prompt: String, text: String?, model: ClaudeModel, effort: ClaudeEffort) {
+    func send(_ prompt: String, text: String?, conversation: PromptConversation, model: ClaudeModel, effort: ClaudeEffort) {
         dismiss()
         guard !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             onError?("Type a prompt before pressing Enter.")
@@ -70,10 +84,11 @@ final class PromptController: ObservableObject {
                     guard requestID == id else { return }
                     state = .loading
                 }
-                let reply = try await service.reply(to: prompt, text: text, model: model, effort: effort)
+                let reply = try await service.reply(to: prompt, text: text, conversation: conversation, model: model, effort: effort)
                 try Task.checkCancellation()
                 guard requestID == id else { return }
                 let message = try PromptReply(answer: reply).validated()
+                conversation.hasReply = true
                 requestID = nil
                 task = nil
                 state = .idle

@@ -142,10 +142,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             if self.model.echo.readsText, event.window === self.window {
                 if event.type == .keyDown {
                     if event.keyCode == 53 { self.model.echo.clear(); return nil }
+                    if self.model.echo.isWaiting { self.model.echo.rejectInput(); return nil }
                     return event
                 }
-                if let field = self.model.echo.textField,
-                   field.bounds.contains(field.convert(event.locationInWindow, from: nil)) {
+                if let area = self.model.echo.areaView,
+                   area.bounds.contains(area.convert(event.locationInWindow, from: nil)) {
                     return event
                 }
             }
@@ -180,7 +181,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         menuActionObserver = NotificationCenter.default.addObserver(forName: NSMenu.willSendActionNotification, object: nil, queue: .main) { [weak self] notification in
             MainActor.assumeIsolated {
                 guard let self else { return }
-                if self.model.echo.readsText, let item = notification.userInfo?["MenuItem"] as? NSMenuItem,
+                if self.model.echo.readsText, !self.model.echo.isWaiting,
+                   let item = notification.userInfo?["MenuItem"] as? NSMenuItem,
                    let action = item.action, ["undo:", "redo:", "cut:", "copy:", "paste:", "selectAll:"].contains(NSStringFromSelector(action)) {
                     return
                 }

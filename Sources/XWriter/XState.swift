@@ -77,13 +77,23 @@ struct DraftStorage {
 final class ComposerModel: ObservableObject {
     @Published var draft: Draft {
         didSet {
-            if draft.id != oldValue.id { synonyms.dismiss(); highlights.dismiss() }
+            if draft.id != oldValue.id {
+                if echo.readsText { echo.clear() }
+                synonyms.dismiss(); highlights.dismiss()
+            }
             else { synonyms.invalidateIfChanged(text: draft.posts.first { $0.id == activePostID }?.text) }
             queueSave()
         }
     }
     @Published var drafts: [Draft]
-    @Published var activePostID: UUID { didSet { if activePostID != oldValue { synonyms.dismiss(); highlights.dismiss() } } }
+    @Published var activePostID: UUID {
+        didSet {
+            if activePostID != oldValue {
+                if echo.readsText { echo.clear() }
+                synonyms.dismiss(); highlights.dismiss()
+            }
+        }
+    }
     @Published var composerWidth: CGFloat = 600
     @Published var showDrafts = false {
         didSet {
@@ -153,7 +163,7 @@ final class ComposerModel: ObservableObject {
             ?? NSImage(contentsOfFile: "me.png")
         echo.message = readError ?? toolbarSettings.error
         echo.onMessage = { [weak self] in self?.synonyms.dismiss(); self?.prompts.dismiss() }
-        prompts.onReply = { [weak self] message in self?.echo.showReply(message) }
+        prompts.onReply = { [weak self] message in self?.echo.continueConversation(with: message) }
         prompts.onError = { [weak self] message in self?.notify(message) }
         synonyms.onError = { [weak self] message in self?.notify(message) }
         highlights.onError = { [weak self] message in self?.notify(message) }
@@ -170,10 +180,11 @@ final class ComposerModel: ObservableObject {
             return
         }
         let text = PromptController.context(text: editor.string, selection: editor.selectedRange())
-        echo.read { [weak self] prompt in
+        let conversation = PromptConversation()
+        echo.read(onSubmit: { [weak self] prompt in
             guard let self else { return }
-            prompts.send(prompt, text: text, model: synonymModel, effort: synonymEffort)
-        }
+            prompts.send(prompt, text: text, conversation: conversation, model: synonymModel, effort: synonymEffort)
+        }, onDismiss: { [weak self] in self?.prompts.dismiss() })
     }
 
     func toggleHighlights(_ button: PromptButton) {
