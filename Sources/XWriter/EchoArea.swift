@@ -5,9 +5,11 @@ final class EchoBuffer: ObservableObject {
     @Published var message: String? {
         didSet {
             input = nil
+            wrapsMessage = false
             if message != nil { onMessage?() }
         }
     }
+    @Published private(set) var wrapsMessage = false
     @Published private(set) var rejectedInputCount = 0
     @Published var inputText = ""
     var onMessage: (() -> Void)?
@@ -37,6 +39,11 @@ final class EchoBuffer: ObservableObject {
         message = "> "
         inputText = ""
         input = .text(onSubmit)
+    }
+
+    func showReply(_ reply: String) {
+        message = reply
+        wrapsMessage = true
     }
 
     func submit() {
@@ -72,11 +79,18 @@ struct EchoArea: View {
         VStack(spacing: 0) {
             Rectangle().fill(Theme.border).frame(height: 1)
             Group {
-                if buffer.readsText {
+                if buffer.wrapsMessage {
+                    Text(buffer.message ?? "")
+                        .font(.system(size: 12))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.vertical, 6)
+                        .frame(minHeight: ComposerWindowSizing.echoAreaHeight - 1, alignment: .leading)
+                } else if buffer.readsText {
                     HStack(spacing: 0) {
                         Text("> ").font(.system(size: 12))
                         EchoTextInput(buffer: buffer)
                     }
+                    .frame(height: ComposerWindowSizing.echoAreaHeight - 1)
                 } else {
                     Text((buffer.message ?? status)?.components(separatedBy: .newlines).joined(separator: " ") ?? "")
                         .font(.system(size: 12)).lineLimit(1)
@@ -86,13 +100,14 @@ struct EchoArea: View {
                             LinearKeyframe(0.2, duration: 0.08)
                             LinearKeyframe(1, duration: 0.16)
                         }
+                        .frame(height: ComposerWindowSizing.echoAreaHeight - 1)
                 }
             }
             .padding(.leading, leadingInset).padding(.trailing, 12)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .frame(height: ComposerWindowSizing.echoAreaHeight - 1)
         }
-        .frame(height: ComposerWindowSizing.echoAreaHeight)
+        .frame(minHeight: ComposerWindowSizing.echoAreaHeight)
+        .fixedSize(horizontal: false, vertical: true)
         .background(Theme.background).foregroundStyle(Theme.secondary)
         .help(buffer.message ?? status ?? "")
         .accessibilityElement(children: .contain)

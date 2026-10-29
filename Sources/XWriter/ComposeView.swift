@@ -5,6 +5,7 @@ struct ComposeView: View {
     @ObservedObject var model: ComposerModel
     @ObservedObject private var synonyms: SynonymController
     @ObservedObject private var prompts: PromptController
+    @ObservedObject private var echo: EchoBuffer
     @ViewState<Bool> private var modelPopover = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -12,6 +13,7 @@ struct ComposeView: View {
         self.model = model
         synonyms = model.synonyms
         prompts = model.prompts
+        echo = model.echo
     }
 
     var body: some View {
@@ -34,6 +36,7 @@ struct ComposeView: View {
                 SynonymEchoArea(controller: synonyms, buffer: model.echo, status: prompts.status)
             }
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.16), value: synonyms.hasResults)
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.16), value: echo.wrapsMessage ? echo.message : nil)
         }
         .onPreferenceChange(ComposerHeightKey.self) { model.onContentHeightChange?($0) }
         .foregroundStyle(Theme.foreground)

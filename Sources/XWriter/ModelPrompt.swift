@@ -25,7 +25,8 @@ struct PromptReply: Decodable {
 final class PromptController: ObservableObject {
     enum State: Equatable { case idle, loading, signingIn }
     @Published private(set) var state = State.idle
-    var onMessage: ((String) -> Void)?
+    var onReply: ((String) -> Void)?
+    var onError: ((String) -> Void)?
     private let service: any PromptService
     private var task: Task<Void, Never>?
     private var requestID: UUID?
@@ -50,7 +51,7 @@ final class PromptController: ObservableObject {
     func send(_ prompt: String, text: String?, model: ClaudeModel, effort: ClaudeEffort) {
         dismiss()
         guard !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            onMessage?("Type a prompt before pressing Enter.")
+            onError?("Type a prompt before pressing Enter.")
             return
         }
         let id = UUID()
@@ -76,13 +77,13 @@ final class PromptController: ObservableObject {
                 requestID = nil
                 task = nil
                 state = .idle
-                onMessage?(message)
+                onReply?(message)
             } catch is CancellationError {
                 // Dismissal or a newer minibuffer interaction owns the display now.
             } catch {
                 guard requestID == id else { return }
                 dismiss()
-                onMessage?(error.localizedDescription)
+                onError?(error.localizedDescription)
             }
         }
     }

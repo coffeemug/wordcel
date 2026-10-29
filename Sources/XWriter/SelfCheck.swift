@@ -272,6 +272,7 @@ enum SelfCheck {
             require(!model.showDrafts, "Command-D closes the drawer")
             require(abs(window.frame.width - (1000 - ComposerWindowSizing.drawerWidth)) < 1, "closing respects resizing while drawer is open")
             await promptInterface(model: model, window: window, service: promptService) { require($0, $1) }
+            await replyLayoutInterface(model: model, window: window, service: promptService) { require($0, $1) }
             await synonymInterface(model: model, window: window, service: synonymService) { require($0, $1) }
             let synonymsOnly = CommandLine.arguments.contains("--synonyms-only")
             if !synonymsOnly {
@@ -811,6 +812,72 @@ enum SelfCheck {
               "a command without a cursor word sends just the prompt")
     }
 
+    @MainActor private static func replyLayoutInterface(model: ComposerModel, window: NSWindow, service: PromptStub,
+                                                        check: (Bool, String) -> Void) async {
+        func settle() async { try? await Task.sleep(for: .milliseconds(350)) }
+        guard let editor = model.activeEditor, let scroll = editor.enclosingScrollView else {
+            check(false, "reply layout has an editor viewport"); return
+        }
+        model.echo.clear()
+        let source = String(repeating: "A line with help.\n", count: 80)
+        editor.insertText(source, replacementRange: NSRange(location: 0, length: (editor.string as NSString).length))
+        await settle()
+        editor.setSelectedRange((source as NSString).range(of: "help", range: NSRange(location: 200, length: (source as NSString).length - 200)))
+        scroll.contentView.scroll(to: NSPoint(x: 0, y: 200))
+        scroll.reflectScrolledClipView(scroll.contentView)
+        await settle()
+        func geometry() -> [NSRect] {
+            [editor.convert(editor.bounds, to: window.contentView),
+             scroll.convert(scroll.bounds, to: window.contentView), scroll.contentView.bounds]
+        }
+        let frame = window.frame
+        let originalGeometry = geometry()
+        let originalToolbar = toolbarSnapshot(in: window, width: model.composerWidth, above: ComposerWindowSizing.echoAreaHeight)
+        let reply = "A clear sentence gives the reader one idea at a time, choosing familiar words and placing the important point early. " +
+            "Remove repeated qualifications and unnecessary introductions, but keep enough detail to preserve the meaning, rhythm, and tone of the original thought."
+        service.result = reply
+        model.prompts.send("Explain clear writing", text: "help", model: model.synonymModel, effort: model.synonymEffort)
+        await settle()
+        guard let expanded = echoHeight(in: window) else {
+            check(false, "expanded reply has a visible minibuffer separator"); return
+        }
+        check(model.echo.message == reply && expanded > SynonymEchoArea.resultsHeight,
+              "a model reply word-wraps into as many lines as needed instead of truncating or stopping at two lines")
+        check(originalToolbar != nil && toolbarSnapshot(in: window, width: model.composerWidth, above: expanded) == originalToolbar,
+              "the unchanged toolbar rises above the expanded reply")
+        check(window.frame == frame && geometry() == originalGeometry && window.firstResponder === editor,
+              "reply expansion preserves window size, editor layout, scroll position, and focus")
+        let escape = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+                                     timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                                     context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53)!
+        NSApp.postEvent(escape, atStart: false)
+        await settle()
+        check(model.echo.message == nil && echoHeight(in: window) == ComposerWindowSizing.echoAreaHeight &&
+              toolbarSnapshot(in: window, width: model.composerWidth, above: ComposerWindowSizing.echoAreaHeight) == originalToolbar,
+              "dismissing a reply returns the unchanged footer to its resting position")
+        check(window.frame == frame && geometry() == originalGeometry,
+              "dismissing a reply preserves the window and scrolled document")
+        model.echo.showReply(reply)
+        await settle()
+        window.setContentSize(NSSize(width: frame.width + 300, height: window.contentView!.bounds.height))
+        await settle()
+        check((echoHeight(in: window) ?? expanded) < expanded &&
+              window.frame.height == frame.height, "a wider window reflows the reply into fewer lines")
+        window.setFrame(frame, display: true)
+        await settle()
+        model.echo.showReply("A short reply.")
+        await settle()
+        check(echoHeight(in: window) == ComposerWindowSizing.echoAreaHeight,
+              "a reply that fits stays at the resting minibuffer height")
+        model.echo.showReply(reply)
+        await settle()
+        model.notify(reply)
+        await settle()
+        check(!model.echo.wrapsMessage && echoHeight(in: window) == ComposerWindowSizing.echoAreaHeight,
+              "ordinary status messages retain their single-line layout after a wrapped reply")
+        model.echo.clear()
+    }
+
     @MainActor private static func drawerDeletionInterface(model: ComposerModel, window: NSWindow,
                                                           check: (Bool, String) -> Void) async {
         func settle() async { try? await Task.sleep(for: .milliseconds(300)) }
@@ -1235,11 +1302,7 @@ enum SelfCheck {
              scroll.convert(scroll.bounds, to: window.contentView), scroll.contentView.bounds]
         }
         func toolbarSnapshot(above height: CGFloat) -> Data? {
-            guard let view = window.contentView else { return nil }
-            let rect = view.convert(NSRect(x: 0, y: height, width: model.composerWidth, height: ComposerWindowSizing.toolbarHeight), from: nil)
-            guard let bitmap = view.bitmapImageRepForCachingDisplay(in: rect) else { return nil }
-            view.cacheDisplay(in: rect, to: bitmap)
-            return bitmap.representation(using: .png, properties: [:])
+            Self.toolbarSnapshot(in: window, width: model.composerWidth, above: height)
         }
         let originalGeometry = geometry()
         let originalToolbar = toolbarSnapshot(above: ComposerWindowSizing.echoAreaHeight)
@@ -1509,6 +1572,36 @@ enum SelfCheck {
               longScroll.convert(longScroll.bounds, to: window.contentView) == longViewport &&
               longScroll.contentView.bounds == longOffset, "new messages replace synonyms and lower the overlay without moving the text")
         await settle()
+    }
+
+    @MainActor private static func echoHeight(in window: NSWindow) -> CGFloat? {
+        guard let view = window.contentView else { return nil }
+        // Only the minibuffer separator crosses the left gutter, outside the toolbar's padding.
+        let rect = view.convert(NSRect(x: 4, y: 0, width: 1, height: view.bounds.height), from: nil)
+        guard let bitmap = view.bitmapImageRepForCachingDisplay(in: rect) else { return nil }
+        view.cacheDisplay(in: rect, to: bitmap)
+        var border: NSColor?
+        view.effectiveAppearance.performAsCurrentDrawingAppearance { border = Theme.borderNS.usingColorSpace(.sRGB) }
+        guard let border else { return nil }
+        let scale = CGFloat(bitmap.pixelsHigh) / view.bounds.height
+        let margin = Int(12 * scale)
+        for y in margin..<(bitmap.pixelsHigh - margin) {
+            guard let color = bitmap.colorAt(x: 0, y: y)?.usingColorSpace(.sRGB) else { continue }
+            if abs(color.redComponent - border.redComponent) < 0.025 &&
+               abs(color.greenComponent - border.greenComponent) < 0.025 &&
+               abs(color.blueComponent - border.blueComponent) < 0.025 {
+                return CGFloat(bitmap.pixelsHigh - y) / scale
+            }
+        }
+        return nil
+    }
+
+    @MainActor private static func toolbarSnapshot(in window: NSWindow, width: CGFloat, above height: CGFloat) -> Data? {
+        guard let view = window.contentView else { return nil }
+        let rect = view.convert(NSRect(x: 0, y: height, width: width, height: ComposerWindowSizing.toolbarHeight), from: nil)
+        guard let bitmap = view.bitmapImageRepForCachingDisplay(in: rect) else { return nil }
+        view.cacheDisplay(in: rect, to: bitmap)
+        return bitmap.representation(using: .png, properties: [:])
     }
 
     @MainActor private static func echoSnapshot(in window: NSWindow) -> Data? {

@@ -153,7 +153,8 @@ final class ComposerModel: ObservableObject {
             ?? NSImage(contentsOfFile: "me.png")
         echo.message = readError ?? toolbarSettings.error
         echo.onMessage = { [weak self] in self?.synonyms.dismiss(); self?.prompts.dismiss() }
-        prompts.onMessage = { [weak self] message in self?.notify(message) }
+        prompts.onReply = { [weak self] message in self?.echo.showReply(message) }
+        prompts.onError = { [weak self] message in self?.notify(message) }
         synonyms.onError = { [weak self] message in self?.notify(message) }
         highlights.onError = { [weak self] message in self?.notify(message) }
         highlights.onNotice = { [weak self] message in self?.notify(message) }
