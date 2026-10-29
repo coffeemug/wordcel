@@ -18,8 +18,9 @@ enum SelfCheck {
         var result = lists
         var authenticated = true
         var signIns = 0
-        var targets: [String] = []
-        var sentences: [String] = []
+        var contexts: [ModelContext] = []
+        var targets: [String?] { contexts.map(\.target) }
+        var texts: [String] { contexts.map(\.text) }
         var models: [ClaudeModel] = []
         var efforts: [ClaudeEffort] = []
         var delay = Duration.milliseconds(100)
@@ -31,9 +32,8 @@ enum SelfCheck {
             try await Task.sleep(for: .milliseconds(100))
             authenticated = true
         }
-        func synonyms(for target: String, in sentence: String, model: ClaudeModel, effort: ClaudeEffort) async throws -> SynonymLists {
-            targets.append(target)
-            sentences.append(sentence)
+        func synonyms(context: ModelContext, model: ClaudeModel, effort: ClaudeEffort) async throws -> SynonymLists {
+            contexts.append(context)
             models.append(model)
             efforts.append(effort)
             let response = result
@@ -47,7 +47,8 @@ enum SelfCheck {
     @MainActor final class HighlightStub: HighlightService {
         var authenticated = true
         var signIns = 0
-        var texts: [String] = []
+        var contexts: [ModelContext] = []
+        var texts: [String] { contexts.map(\.text) }
         var prompts: [String] = []
         var models: [ClaudeModel] = []
         var efforts: [ClaudeEffort] = []
@@ -58,8 +59,8 @@ enum SelfCheck {
                                                .init(text: "precise", occurrence: 2)])
         func isAuthenticated() async throws -> Bool { authenticated }
         func signIn() async throws { signIns += 1; authenticated = true }
-        func highlights(in text: String, prompt: String, model: ClaudeModel, effort: ClaudeEffort) async throws -> HighlightMatches {
-            texts.append(text); prompts.append(prompt); models.append(model); efforts.append(effort)
+        func highlights(context: ModelContext, prompt: String, model: ClaudeModel, effort: ClaudeEffort) async throws -> HighlightMatches {
+            contexts.append(context); prompts.append(prompt); models.append(model); efforts.append(effort)
             let response = result
             do { try await Task.sleep(for: delay) }
             catch is CancellationError { if !ignoreCancellation { throw CancellationError() } }
@@ -72,7 +73,9 @@ enum SelfCheck {
         var authenticated = true
         var signIns = 0
         var prompts: [String] = []
-        var texts: [String?] = []
+        var contexts: [ModelContext] = []
+        var targets: [String?] { contexts.map(\.target) }
+        var texts: [String] { contexts.map(\.text) }
         var models: [ClaudeModel] = []
         var efforts: [ClaudeEffort] = []
         var conversationIDs: [UUID] = []
@@ -83,9 +86,9 @@ enum SelfCheck {
         var result = "A brief answer."
         func isAuthenticated() async throws -> Bool { authenticated }
         func signIn() async throws { signIns += 1; authenticated = true }
-        func reply(to prompt: String, text: String?, conversation: PromptConversation,
+        func reply(to prompt: String, context: ModelContext, conversation: PromptConversation,
                    model: ClaudeModel, effort: ClaudeEffort) async throws -> String {
-            prompts.append(prompt); texts.append(text); models.append(model); efforts.append(effort)
+            prompts.append(prompt); contexts.append(context); models.append(model); efforts.append(effort)
             conversationIDs.append(conversation.id); resumptions.append(conversation.hasReply)
             let answer = result
             do { try await Task.sleep(for: delay) }
@@ -283,13 +286,16 @@ enum SelfCheck {
             await promptInterface(model: model, window: window, service: promptService) { require($0, $1) }
             await replyLayoutInterface(model: model, window: window, service: promptService) { require($0, $1) }
             await synonymInterface(model: model, window: window, service: synonymService) { require($0, $1) }
+            await sharedContextInterface(model: model, window: window, synonyms: synonymService,
+                                         highlights: highlightService, prompts: promptService) { require($0, $1) }
             let synonymsOnly = CommandLine.arguments.contains("--synonyms-only")
             if !synonymsOnly {
                 await highlightInterface(model: model, window: window, service: highlightService) { require($0, $1) }
             }
             if !synonymsOnly || CommandLine.arguments.contains("--with-cli-checks") {
-                await commandChecks { require($0, $1) }
+                await commandChecks(log: model.modelLog) { require($0, $1) }
             }
+            await modelLogInterface(model: model, window: window) { require($0, $1) }
             require(model.save(), "edited content persists")
             UserDefaults.standard.removePersistentDomain(forName: model.storage.directory.lastPathComponent)
             try? FileManager.default.removeItem(at: model.storage.directory)
@@ -340,14 +346,38 @@ enum SelfCheck {
         let helpRange = (targetText as NSString).range(of: "Help")
         let target = SynonymTarget.capture(text: targetText, selection: NSRange(location: helpRange.location + 2, length: 0))
         check(target?.query == "Help" && target?.range == helpRange, "synonyms target the word under a UTF-16 cursor")
-        check(PromptController.context(text: targetText, selection: NSRange(location: helpRange.location + 2, length: 0)) == "Help",
-              "model prompts capture the word at a Unicode-aware cursor")
-        check(PromptController.context(text: targetText, selection: NSRange(location: helpRange.location + 1, length: 2)) == "el",
-              "model prompts send an exact partial-word selection rather than expanding it")
-        check(PromptController.context(text: "  😀 123\n", selection: NSRange(location: 0, length: 9)) == "  😀 123\n" &&
-              PromptController.context(text: "", selection: NSRange(location: 0, length: 0)) == nil &&
-              PromptController.context(text: targetText, selection: NSRange(location: 8, length: 0)) == nil,
-              "model prompts preserve arbitrary selected text and omit context when there is no cursor word")
+        check(ModelContext.capture(text: targetText, selection: NSRange(location: helpRange.location + 2, length: 0))?.target == "Help",
+              "shared model context captures the word at a Unicode-aware cursor")
+        check(ModelContext.capture(text: targetText, selection: NSRange(location: helpRange.location + 1, length: 2))?.target == "el" &&
+              SynonymTarget.capture(text: targetText, selection: NSRange(location: helpRange.location + 1, length: 2))?.query == "el",
+              "every feature uses an exact partial-word selection rather than expanding it")
+        check(ModelContext.capture(text: "  😀 123\n", selection: NSRange(location: 0, length: 9))?.target == "  😀 123\n" &&
+              ModelContext.capture(text: "", selection: NSRange(location: 0, length: 0))?.text == "" &&
+              ModelContext.capture(text: targetText, selection: NSRange(location: 8, length: 0))?.target == nil &&
+              ModelContext.capture(text: targetText, selection: NSRange(location: 8, length: 0))?.text == targetText,
+              "shared context preserves arbitrary selections and still supplies a paragraph when there is no cursor word")
+        for separator in ["\n", "\r\n", "\u{2029}"] {
+            let paragraph = "😀 First sentence. Help again.\(separator)"
+            let document = "Outside.\(separator)\(paragraph)Not sent."
+            let selected = (document as NSString).range(of: "Help")
+            let captured = ModelContext.capture(text: document, selection: selected)
+            check(captured?.text == paragraph && captured?.range == (document as NSString).range(of: paragraph) &&
+                  captured?.target == "Help", "context includes all sentences in just one paragraph with \(separator.debugDescription) boundaries")
+            let span = (document as NSString).range(of: "again.\(separator)Not")
+            let across = ModelContext.capture(text: document, selection: span)
+            check(across?.text == "again.\(separator)Not" && across?.target == across?.text && across?.range == span,
+                  "cross-paragraph selections send only their exact text and retain absolute UTF-16 offsets")
+            let wholeParagraph = (document as NSString).range(of: paragraph)
+            check(ModelContext.capture(text: document, selection: wholeParagraph)?.text == paragraph,
+                  "a selection ending at the next paragraph's start does not include that paragraph")
+        }
+        check(ModelContext.capture(text: "First.\n\nLast.", selection: NSRange(location: 7, length: 0))?.text == "\n" &&
+              ModelContext.capture(text: "First.\n", selection: NSRange(location: 7, length: 0))?.text == "",
+              "blank paragraphs and end-of-document cursors do not borrow neighboring paragraphs")
+        check(ModelContext.capture(text: "😀 word", selection: NSRange(location: 1, length: 0)) == nil &&
+              ModelContext.capture(text: "word", selection: NSRange(location: NSNotFound, length: 0)) == nil &&
+              ModelContext.capture(text: "word", selection: NSRange(location: 0, length: 5)) == nil,
+              "invalid UTF-16 selections are rejected before paragraph extraction")
         check(target?.matches(text: targetText, selection: NSRange(location: helpRange.location, length: 0)) == true &&
               target?.matches(text: targetText, selection: NSRange(location: NSMaxRange(helpRange), length: 0)) == true &&
               target?.matches(text: targetText, selection: helpRange) == true,
@@ -367,8 +397,9 @@ enum SelfCheck {
         let phraseRange = (phraseText as NSString).range(of: "lend a hand")
         let phraseSelection = NSRange(location: phraseRange.location - 1, length: phraseRange.length + 2)
         let phrase = SynonymTarget.capture(text: phraseText, selection: phraseSelection)
-        check(phrase?.query == "lend a hand" && phrase?.range == phraseRange && phrase?.sentence == phraseText,
-              "phrase targeting trims only outer whitespace and preserves UTF-16 replacement offsets")
+        check(phrase?.query == "lend a hand" && phrase?.range == phraseRange && phrase?.context.text == phraseText &&
+              phrase?.context.target == " lend a hand ",
+              "model context keeps the exact selection while synonym replacement preserves its outer whitespace")
         check(phrase?.matches(text: phraseText, selection: phraseSelection) == true &&
               phrase?.matches(text: phraseText, selection: phraseRange) == true &&
               phrase?.matches(text: phraseText, selection: NSRange(location: phraseRange.location, length: 4)) == false,
@@ -378,20 +409,20 @@ enum SelfCheck {
               "phrase replacement preserves initial and all-caps capitalization")
         let acrossSentences = "Before. Lend a hand.\nHelp out. After."
         let acrossRange = (acrossSentences as NSString).range(of: "a hand.\nHelp")
-        check(SynonymTarget.capture(text: acrossSentences, selection: acrossRange)?.sentence == "Lend a hand.\nHelp out.",
-              "context covers every selected sentence without adjacent sentences")
+        check(SynonymTarget.capture(text: acrossSentences, selection: acrossRange)?.context.text == "a hand.\nHelp",
+              "cross-paragraph synonym context contains only the selection")
         check(SynonymTarget.capture(text: "  😀 123", selection: NSRange(location: 1, length: 0)) == nil,
               "synonyms reject whitespace and nonword targets")
         check(SynonymTarget.capture(text: "  😀 123", selection: NSRange(location: 0, length: 8)) == nil,
               "selected phrases must contain letters")
         for (text, expected) in [
-            ("Earlier news. 😀 With each update add something nice. Keep it simple.", "😀 With each update add something nice."),
+            ("Earlier news. 😀 With each update add something nice. Keep it simple.", "Earlier news. 😀 With each update add something nice. Keep it simple."),
             ("First line.\n\nwith each update add something nice", "with each update add something nice"),
-            ("We update the draft. Each update adds something nice.", "Each update adds something nice.")
+            ("We update the draft. Each update adds something nice.", "We update the draft. Each update adds something nice.")
         ] {
             let range = (text as NSString).range(of: "update", options: .backwards)
             let target = SynonymTarget.capture(text: text, selection: NSRange(location: NSMaxRange(range), length: 0))
-            check(target?.query == "update" && target?.sentence == expected, "lookup extracts only the target sentence: \(expected)")
+            check(target?.query == "update" && target?.context.text == expected, "lookup extracts the entire target paragraph: \(expected)")
         }
         do {
             let reply = try ClaudeCLI.decodePrompt(.init(status: 0, output: Data(#"{"type":"result","is_error":false,"structured_output":{"answer":" A short reply. "}}"#.utf8)))
@@ -730,19 +761,20 @@ enum SelfCheck {
         model.newDraft()
         await settle()
         guard let editor = model.activeEditor else { check(false, "prompt command has a post editor"); return }
-        let source = "😀 A little help goes a long way."
+        let paragraph = "😀 A little help goes a long way. Another sentence.\n"
+        let source = "Before.\n\n\(paragraph)\nAfter."
         editor.insertText(source, replacementRange: NSRange(location: NSNotFound, length: 0))
         let word = (source as NSString).range(of: "help")
         let selection = NSRange(location: word.location + 1, length: 2)
         editor.setSelectedRange(selection)
         await settle()
         let frame = window.frame
-        let editorFrame = editor.convert(editor.bounds, to: nil)
+        let selectionRect = editor.firstRect(forCharacterRange: selection, actualRange: nil)
         await begin("")
         check(model.echo.readsText && model.echo.message == "> " && model.echo.textField?.currentEditor() === window.firstResponder &&
               window.firstResponder !== editor && !model.showHandoff && window.frame == frame &&
-              editor.convert(editor.bounds, to: nil) == editorFrame,
-              "Control-Enter opens a focused native minibuffer input without publishing or moving the post")
+              editor.firstRect(forCharacterRange: selection, actualRange: nil) == selectionRect,
+              "Control-Enter opens a focused native minibuffer input without publishing or moving the post text")
         await press("x", code: 7)
         await press("y", code: 16)
         await press("\u{7f}", code: 51)
@@ -771,7 +803,7 @@ enum SelfCheck {
         service.delay = .milliseconds(600)
         await press("\r", code: 36)
         check(model.prompts.state == .loading && model.echo.isWaiting && model.echo.expectsInput && window.firstResponder !== editor &&
-              service.prompts == ["Explain this"] && service.texts == ["el"] &&
+              service.prompts == ["Explain this"] && service.targets == ["el"] && service.texts == [paragraph] &&
               service.models == [model.synonymModel] && service.efforts == [model.synonymEffort] && editor.string == source,
               "Enter submits the exact selection and prompt using the configured model without editing the post")
         await press("x", code: 7)
@@ -794,7 +826,7 @@ enum SelfCheck {
         } else { check(false, "follow-up prompt has a native editor") }
         await press("\r", code: 36)
         await settle()
-        check(service.prompts == ["Explain this", "Why?"] && service.texts == ["el", "el"] &&
+        check(service.prompts == ["Explain this", "Why?"] && service.targets == ["el", "el"] && service.texts == [paragraph, paragraph] &&
               service.conversationIDs == [firstConversation, firstConversation] && service.resumptions == [false, true] &&
               model.echo.message == service.result && model.echo.inputText.isEmpty && model.echo.readsText,
               "a follow-up resumes the same conversation with the original exact selection and replaces the displayed reply")
@@ -808,7 +840,7 @@ enum SelfCheck {
         await begin("Define it")
         await press("\r", code: 36)
         await settle()
-        check(service.texts.last == "help" && service.signIns == 1 && model.echo.message == service.result &&
+        check(service.targets.last == "help" && service.texts.last == paragraph && service.signIns == 1 && model.echo.message == service.result &&
               service.conversationIDs.last != firstConversation && service.resumptions.last == false,
               "a new conversation starts fresh with the cursor word and subscription sign-in when needed")
 
@@ -859,8 +891,8 @@ enum SelfCheck {
         await begin("Suggest a topic")
         await press("\r", code: 36)
         await settle()
-        check(service.texts.last == .some(nil) && model.echo.message == service.result,
-              "a command without a cursor word sends just the prompt")
+        check(service.targets.last == .some(nil) && service.texts.last == "" && model.echo.message == service.result,
+              "an empty editor sends a prompt with empty context and no target")
     }
 
     @MainActor private static func replyLayoutInterface(model: ComposerModel, window: NSWindow, service: PromptStub,
@@ -1029,6 +1061,147 @@ enum SelfCheck {
               "Y deletes the requested draft without typing Y, restores editor focus, and leaves the drawer open")
     }
 
+    @MainActor private static func sharedContextInterface(model: ComposerModel, window: NSWindow, synonyms: SynonymStub,
+                                                          highlights: HighlightStub, prompts: PromptStub,
+                                                          check: (Bool, String) -> Void) async {
+        func settle() async { try? await Task.sleep(for: .milliseconds(350)) }
+        model.echo.clear()
+        model.synonyms.dismiss()
+        model.newDraft()
+        await settle()
+        guard let editor = model.activeEditor, let button = model.toolbarSettings.buttons.first else {
+            check(false, "shared context has an editor and highlight button"); return
+        }
+        let previousMatches = highlights.result
+        defer {
+            model.highlights.dismiss()
+            highlights.result = previousMatches
+            highlights.delay = .milliseconds(100)
+            highlights.contexts.removeAll()
+            highlights.prompts.removeAll()
+            highlights.models.removeAll()
+            highlights.efforts.removeAll()
+        }
+        let paragraph = "First mark sentence. More mark words.\n"
+        let source = "😀 Outside mark.\n\n\(paragraph)\nLast mark paragraph."
+        editor.insertText(source, replacementRange: NSRange(location: 0, length: (editor.string as NSString).length))
+        let scope = (source as NSString).range(of: paragraph)
+        let first = (source as NSString).range(of: "mark", range: scope)
+        let across = (source as NSString).range(of: "mark words.\n\nLast mark")
+        highlights.result = HighlightMatches(matches: [.init(text: "mark", occurrence: 1), .init(text: "mark", occurrence: 2)])
+        for selection in [NSRange(location: first.location + 2, length: 0),
+                          NSRange(location: first.location + 1, length: 2), across] {
+            editor.setSelectedRange(selection)
+            let expected = ModelContext.capture(text: source, selection: selection)!
+            model.synonyms.lookup(in: editor, model: model.synonymModel, effort: model.synonymEffort)
+            await settle()
+            check(synonyms.contexts.last == expected && model.synonyms.hasResults,
+                  "synonyms use shared cursor/selection and paragraph context")
+            model.readPrompt()
+            model.echo.inputText = "Explain this context"
+            model.echo.submit()
+            await settle()
+            check(prompts.contexts.last == expected && model.echo.readsText && !model.echo.isWaiting,
+                  "conversations use exactly the same captured context as synonyms")
+            model.echo.clear()
+            model.toggleHighlights(button)
+            await settle()
+            let expectedScope = selection == across ? across : scope
+            let expectedRanges = try! highlights.result.ranges(in: (source as NSString).substring(with: expectedScope))
+                .map { NSRange(location: expectedScope.location + $0.location, length: $0.length) }
+            check(highlights.contexts.last == expected && model.highlights.ranges == expectedRanges &&
+                  model.highlights.ranges.allSatisfy { NSIntersectionRange($0, expectedScope) == $0 },
+                  "button highlights use that same context and only mark the captured paragraph or multi-paragraph selection")
+            model.highlights.dismiss()
+        }
+        editor.setSelectedRange(NSRange(location: first.location, length: 0))
+        highlights.delay = .milliseconds(600)
+        model.toggleHighlights(button)
+        try? await Task.sleep(for: .milliseconds(50))
+        editor.insertText("Prefix 😀 ", replacementRange: NSRange(location: 0, length: 0))
+        let shiftedFirst = (editor.string as NSString).range(of: "mark sentence")
+        editor.insertText("x", replacementRange: NSRange(location: shiftedFirst.location + 1, length: 0))
+        try? await Task.sleep(for: .milliseconds(700))
+        let remaining = (editor.string as NSString).range(of: "mark words")
+        check(model.highlights.ranges == [NSRange(location: remaining.location, length: 4)],
+              "pending paragraph-relative matches are translated before global edits shift and invalidate them")
+        model.highlights.dismiss()
+        highlights.delay = .milliseconds(100)
+        highlights.result = HighlightMatches(matches: [.init(text: "Outside", occurrence: 1)])
+        editor.setSelectedRange(remaining)
+        model.toggleHighlights(button)
+        await settle()
+        check(model.highlights.state == .idle && model.echo.message == HighlightError.invalidResponse.localizedDescription,
+              "matches that exist only outside the captured paragraph are rejected")
+        let requests = highlights.contexts.count
+        let blank = (editor.string as NSString).range(of: "\n\n").location + 1
+        editor.setSelectedRange(NSRange(location: blank, length: 0))
+        model.toggleHighlights(button)
+        check(highlights.contexts.count == requests && model.highlights.state == .idle && model.echo.message != nil,
+              "an empty paragraph reports an error instead of silently highlighting the whole post")
+        model.echo.clear()
+    }
+
+    @MainActor private static func modelLogInterface(model: ComposerModel, window: NSWindow,
+                                                    check: (Bool, String) -> Void) async {
+        func settle() async { try? await Task.sleep(for: .milliseconds(350)) }
+        func press(_ text: String, code: UInt16, modifiers: NSEvent.ModifierFlags = [], in target: NSWindow) async {
+            let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers,
+                                        timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: target.windowNumber,
+                                        context: nil, characters: text, charactersIgnoringModifiers: text,
+                                        isARepeat: false, keyCode: code)!
+            NSApp.postEvent(event, atStart: false)
+            await settle()
+        }
+        func logEditor(in view: NSView) -> NSTextView? {
+            if let editor = view as? NSTextView, editor.identifier?.rawValue == "model-session-log" { return editor }
+            return view.subviews.lazy.compactMap { logEditor(in: $0) }.first
+        }
+        model.readPrompt()
+        model.echo.inputText = "Keep this conversation"
+        let composerFrame = window.frame
+        await press("<", code: 43, modifiers: [.command, .shift], in: window)
+        guard let dialog = NSApp.windows.first(where: { $0.isVisible && $0.title == "Model Log" }),
+              let content = dialog.contentView, let textView = logEditor(in: content) else {
+            check(false, "Command-Shift-comma opens a dedicated model-log dialog"); return
+        }
+        check(dialog !== window && dialog.isKeyWindow && window.frame == composerFrame &&
+              textView.string == model.modelLog.transcript && !textView.isEditable && textView.isSelectable,
+              "Command-less-than opens a separate selectable, scrollable session log without changing the composer")
+        check(model.echo.readsText && model.echo.inputText == "Keep this conversation",
+              "opening the log does not dismiss an existing conversation")
+        let entry = model.modelLog.begin(feature: "Live log check", arguments: ["--print", "--system-prompt", "A test instruction"],
+                                         input: #"{"target":"😀","text":"a paragraph","prompt":"keep it short"}"#)
+        await settle()
+        check(textView.string.contains("Waiting for response...") && textView.string == model.modelLog.transcript,
+              "an open log updates when a request starts")
+        model.echo.submit()
+        model.modelLog.received(.init(status: 0, output: Data("A live response with 😀.".utf8)), for: entry)
+        await settle()
+        check(dialog.isKeyWindow && model.echo.readsText && !model.echo.isWaiting &&
+              textView.string.contains("A live response with 😀.") && textView.string == model.modelLog.transcript,
+              "responses update the dialog live without interrupting the conversation or stealing log focus")
+        dialog.makeFirstResponder(textView)
+        await press("a", code: 0, modifiers: .command, in: dialog)
+        check(textView.selectedRange().length == (textView.string as NSString).length && model.echo.readsText,
+              "native Select All works in the log without clearing the conversation")
+        let transcript = textView.string
+        await press("\u{1b}", code: 53, in: dialog)
+        check(!dialog.isVisible && model.echo.readsText, "Escape closes only the log dialog")
+        let shortcut = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [.command, .shift],
+                                       timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                                       context: nil, characters: "<", charactersIgnoringModifiers: "<", isARepeat: false, keyCode: 43)!
+        check(NSApp.mainMenu?.performKeyEquivalent(with: shortcut) == true, "the model log also has a working menu shortcut")
+        await settle()
+        check(dialog.isVisible && textView.string == transcript && model.echo.readsText,
+              "closing and reopening the dialog preserves all current-session exchanges")
+        await press("w", code: 13, modifiers: .command, in: dialog)
+        check(!dialog.isVisible && model.echo.readsText, "Command-W closes the log without ending the conversation")
+        model.echo.clear()
+        window.makeKeyAndOrderFront(nil)
+        await settle()
+    }
+
     @MainActor private static func highlightInterface(model: ComposerModel, window: NSWindow, service: HighlightStub,
                                                       check: (Bool, String) -> Void) async {
         func settle() async { try? await Task.sleep(for: .milliseconds(350)) }
@@ -1085,7 +1258,7 @@ enum SelfCheck {
         guard let restingIcon = firstIconBounds() else { check(false, "active toolbar icon is visible"); return }
         check(service.texts == [source] && service.prompts == [buttons[0].prompt] &&
               service.models == [model.synonymModel] && service.efforts == [model.synonymEffort],
-              "highlight request uses the whole post, configured prompt, and current model/effort")
+              "highlight request uses the captured paragraph, configured prompt, and current model/effort")
         let precise = (source as NSString).range(of: "precise")
         let layout = editor.layoutManager!
         check(layout.temporaryAttribute(.underlineStyle, atCharacterIndex: precise.location, effectiveRange: nil) as? Int == NSUnderlineStyle.single.rawValue &&
@@ -1402,7 +1575,7 @@ enum SelfCheck {
         service.delay = .milliseconds(100)
         let ready = SynonymController.State.ready(SynonymStub.lists)
         check(model.synonyms.state == ready, "synonyms display both groups")
-        check(service.targets.last == "Help" && service.sentences.last == "😀 Help, help.", "the word and its sentence are sent to Claude")
+        check(service.targets.last == "Help" && service.texts.last == "😀 Help, help.", "the word and its paragraph are sent to Claude")
         check(originalToolbar != nil && toolbarSnapshot(above: SynonymEchoArea.minimumResultsHeight) == originalToolbar,
               "the unchanged toolbar, counter, and Post button shift above the two-line minibuffer")
         check(window.frame == frame && geometry() == originalGeometry, "synonym rows preserve the window, editor frame, viewport, and scroll position")
@@ -1577,13 +1750,13 @@ enum SelfCheck {
         check(model.synonyms.state == .idle, "switching drafts dismisses results for the previous editor")
         await settle()
         guard let editor = model.activeEditor else { check(false, "new draft requires an editor"); return }
-        editor.insertText("Skip this sentence. With each update add something nice. Skip this too.",
+        editor.insertText("Skip this paragraph.\n\nFirst sentence. With each update add something nice. Last sentence.\n\nSkip this too.",
                           replacementRange: NSRange(location: NSNotFound, length: 0))
         editor.setSelectedRange((editor.string as NSString).range(of: "update"))
         editor.keyDown(with: key(" ", code: 49))
         await settle()
-        check(service.targets.last == "update" && service.sentences.last == "With each update add something nice.",
-              "native lookups send the selected word's sentence without adjacent sentences")
+        check(service.targets.last == "update" && service.texts.last == "First sentence. With each update add something nice. Last sentence.\n",
+              "native lookups send the selected word and its whole paragraph without neighboring paragraphs")
 
         let phraseText = "😀 Please lend a hand with this, then lend a hand. Keep this sentence."
         editor.selectAll(nil)
@@ -1595,9 +1768,9 @@ enum SelfCheck {
         editor.setSelectedRange(phraseSelection)
         editor.keyDown(with: key(" ", code: 49))
         await settle()
-        check(model.synonyms.state == ready && service.targets.last == "lend a hand" &&
-              service.sentences.last == "😀 Please lend a hand with this, then lend a hand.",
-              "selected phrases request single-word alternatives with sentence context")
+        check(model.synonyms.state == ready && service.targets.last == " lend a hand " &&
+              service.texts.last == phraseText,
+              "selected phrases request single-word alternatives with exact selection and full paragraph context")
         await click(at: NSPoint(x: ComposerWindowSizing.textLeading + 43, y: 34))
         let replacedPhrase = "😀 Please assist with this, then lend a hand. Keep this sentence."
         check(editor.string == replacedPhrase && model.draft.posts[0].text == replacedPhrase,
@@ -1716,7 +1889,7 @@ enum SelfCheck {
         return bitmap.representation(using: .png, properties: [:])
     }
 
-    @MainActor private static func commandChecks(check: (Bool, String) -> Void) async {
+    @MainActor private static func commandChecks(log: ModelSessionLog, check: (Bool, String) -> Void) async {
         let environment = ["PATH": "/usr/bin:/bin"]
         do {
             let fixture = FileManager.default.temporaryDirectory.appendingPathComponent("XWriter-CLI-check-\(UUID())")
@@ -1732,6 +1905,7 @@ enum SelfCheck {
             [ -n "$CLAUDE_CONFIG_DIR" ] || exit 2
             [ -z "${ANTHROPIC_API_KEY-}" ] || exit 3
             action=
+            schema=
             session=
             resume=false
             previous=
@@ -1739,6 +1913,7 @@ enum SelfCheck {
                 case "$previous" in
                     --session-id) session="$arg";;
                     --resume) session="$arg"; resume=true;;
+                    --json-schema) schema="$arg";;
                 esac
                 case "$arg" in status|login|--print) action="$arg";; esac
                 previous="$arg"
@@ -1756,9 +1931,16 @@ enum SelfCheck {
                 --print)
                     cat > "$CLAUDE_CONFIG_DIR/request.json"
                     printf '%s\\n' "$@" > "$CLAUDE_CONFIG_DIR/arguments.txt"
-                    if grep -q '"rule"' "$CLAUDE_CONFIG_DIR/request.json"; then
+                    if grep -q 'CANCEL_LOG' "$CLAUDE_CONFIG_DIR/request.json"; then
+                        printf '%s' 'Partial model output'
+                        printf '%s' 'Partial diagnostic' >&2
+                        exec sleep 5
+                    elif grep -q 'BAD_OUTPUT_LOG' "$CLAUDE_CONFIG_DIR/request.json"; then
+                        printf '%s' 'Malformed model output'
+                        printf '%s' 'Full diagnostic output' >&2
+                    elif printf '%s' "$schema" | grep -q '"matches"'; then
                         printf '%s' '{"type":"result","is_error":false,"structured_output":{"matches":[{"text":"clear","occurrence":2}]}}'
-                    elif grep -q '"prompt"' "$CLAUDE_CONFIG_DIR/request.json"; then
+                    elif printf '%s' "$schema" | grep -q '"answer"'; then
                         [ -n "$session" ] || exit 6
                         transcript="$CLAUDE_CONFIG_DIR/session-$session"
                         if [ "$resume" = true ]; then
@@ -1782,13 +1964,16 @@ enum SelfCheck {
             """
             try Data(source.utf8).write(to: script)
             try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: script.path)
-            let cli = ClaudeCLI(configurationDirectory: fixture.appendingPathComponent("profile"), executable: script)
+            let cli = ClaudeCLI(configurationDirectory: fixture.appendingPathComponent("profile"), executable: script, log: log)
+            let initialLogCount = log.entries.count
             check(try await !cli.isAuthenticated(), "signed-out CLI status requests login")
             try await cli.signIn()
             check(try await cli.isAuthenticated(), "CLI-owned sign-in is checked before lookup")
+            check(log.entries.count == initialLogCount, "authentication status and browser sign-in are never included in the model log")
             let sentence = #"Please "lend a hand" with 😀 updates."#
+            let synonymContext = ModelContext.capture(text: sentence, selection: (sentence as NSString).range(of: "lend a hand"))!
             for (model, effort) in [(ClaudeModel.fable, ClaudeEffort.low), (.opus, .high), (.sonnet, .xhigh), (.haiku, .max), (.fable, .medium)] {
-                check(try await cli.synonyms(for: "lend a hand", in: sentence, model: model, effort: effort) == SynonymLists(latin: ["assist"], germanic: ["back"]),
+                check(try await cli.synonyms(context: synonymContext, model: model, effort: effort) == SynonymLists(latin: ["assist"], germanic: ["back"]),
                       "CLI service reads structured results end to end")
                 let arguments = try String(contentsOf: fixture.appendingPathComponent("profile/arguments.txt"), encoding: .utf8).components(separatedBy: "\n")
                 let options = Array(zip(arguments, arguments.dropFirst()))
@@ -1798,13 +1983,15 @@ enum SelfCheck {
                       "CLI requests \(model.title) with \(effort.title) effort without persisting synonym sessions")
             }
             let request = try JSONDecoder().decode([String: String].self, from: Data(contentsOf: fixture.appendingPathComponent("profile/request.json")))
-            check(request == ["target": "lend a hand", "sentence": sentence], "CLI sends the whole phrase and its context as safely encoded JSON")
+            check(request == ["target": "lend a hand", "text": sentence], "CLI sends the whole phrase and its paragraph using the shared JSON envelope")
             let highlightedText = "😀 clear and clear."
             let highlightPrompt = #"Highlight the second "clear"."#
-            let highlights = try await cli.highlights(in: highlightedText, prompt: highlightPrompt, model: .opus, effort: .xhigh)
+            let highlightContext = ModelContext.capture(text: highlightedText, selection: (highlightedText as NSString).range(of: "clear"))!
+            let highlights = try await cli.highlights(context: highlightContext, prompt: highlightPrompt, model: .opus, effort: .xhigh)
             check(try highlights.ranges(in: highlightedText) == [NSRange(location: 13, length: 5)], "CLI highlight response resolves exact Unicode-aware intervals")
             let highlightRequest = try JSONDecoder().decode([String: String].self, from: Data(contentsOf: fixture.appendingPathComponent("profile/request.json")))
-            check(highlightRequest == ["rule": highlightPrompt, "text": highlightedText], "CLI encodes custom prompts and full text without shell interpolation")
+            check(highlightRequest == ["prompt": highlightPrompt, "target": "clear", "text": highlightedText],
+                  "highlight CLI uses the shared prompt, target, and paragraph envelope without shell interpolation")
             let highlightArguments = try String(contentsOf: fixture.appendingPathComponent("profile/arguments.txt"), encoding: .utf8).components(separatedBy: "\n")
             let highlightOptions = Array(zip(highlightArguments, highlightArguments.dropFirst()))
             check(highlightOptions.contains { $0 == "--model" && $1 == ClaudeModel.opus.rawValue } &&
@@ -1814,10 +2001,11 @@ enum SelfCheck {
                   highlightArguments.contains("--no-session-persistence"), "highlight CLI uses current model, effort, interval schema, no tools, and no persisted session")
             let prompt = #"Explain "this" briefly."#
             let selectedText = "😀 selected text\nwith a second line"
+            let promptContext = ModelContext.capture(text: selectedText, selection: NSRange(location: 0, length: (selectedText as NSString).length))!
             let conversation = PromptConversation()
-            let reply = try await cli.reply(to: prompt, text: selectedText, conversation: conversation, model: .haiku, effort: .low)
+            let reply = try await cli.reply(to: prompt, context: promptContext, conversation: conversation, model: .haiku, effort: .low)
             let promptRequest = try JSONDecoder().decode([String: String].self, from: Data(contentsOf: fixture.appendingPathComponent("profile/request.json")))
-            check(reply == "A short response." && promptRequest == ["prompt": prompt, "text": selectedText],
+            check(reply == "A short response." && promptRequest == ["prompt": prompt, "target": selectedText, "text": selectedText],
                   "prompt CLI sends the user's exact request and selected Unicode text as JSON and decodes the reply")
             let promptArguments = try String(contentsOf: fixture.appendingPathComponent("profile/arguments.txt"), encoding: .utf8)
             check(promptArguments.contains(ClaudeCLI.promptSystemPrompt) && promptArguments.contains(ClaudeCLI.promptSchema) &&
@@ -1828,25 +2016,26 @@ enum SelfCheck {
                   "prompt CLI starts an explicit isolated conversation with the configured model, short response schema, and no tools")
             conversation.hasReply = true
             let followUp = "Explain further"
-            let continued = try await cli.reply(to: followUp, text: selectedText, conversation: conversation, model: .haiku, effort: .low)
+            let continued = try await cli.reply(to: followUp, context: promptContext, conversation: conversation, model: .haiku, effort: .low)
             let resumeArguments = try String(contentsOf: fixture.appendingPathComponent("profile/arguments.txt"), encoding: .utf8)
             func resumedHistory() throws -> [[String: String]] {
                 try String(contentsOf: fixture.appendingPathComponent("profile/resumed.jsonl"), encoding: .utf8)
                     .split(separator: "\n").map { try JSONDecoder().decode([String: String].self, from: Data($0.utf8)) }
             }
-            let previousTurns = [["prompt": prompt, "text": selectedText], ["answer": reply]]
+            let previousTurns = [["prompt": prompt, "target": selectedText, "text": selectedText], ["answer": reply]]
             check(try continued == "A continued response." && resumedHistory() == previousTurns &&
                   resumeArguments.contains("--resume\n\(conversation.id.uuidString)") &&
                   !resumeArguments.contains("--session-id") && !resumeArguments.contains("--continue"),
                   "follow-up CLI invocation resumes the explicit session in the same directory with the original prompt, context, and assistant reply")
-            _ = try await cli.reply(to: "And why?", text: selectedText, conversation: conversation, model: .haiku, effort: .low)
-            check(try resumedHistory() == previousTurns + [["prompt": followUp, "text": selectedText], ["answer": continued]],
+            _ = try await cli.reply(to: "And why?", context: promptContext, conversation: conversation, model: .haiku, effort: .low)
+            check(try resumedHistory() == previousTurns + [["prompt": followUp, "target": selectedText, "text": selectedText], ["answer": continued]],
                   "third CLI turn restores every earlier user and assistant turn, not just the previous response")
             let cleanupDirectory: URL
             do {
                 let fresh = PromptConversation()
                 cleanupDirectory = fresh.directory
-                let freshReply = try await cli.reply(to: prompt, text: nil, conversation: fresh, model: .sonnet, effort: .medium)
+                let emptyContext = ModelContext.capture(text: "", selection: NSRange(location: 0, length: 0))!
+                let freshReply = try await cli.reply(to: prompt, context: emptyContext, conversation: fresh, model: .sonnet, effort: .medium)
                 let freshArguments = try String(contentsOf: fixture.appendingPathComponent("profile/arguments.txt"), encoding: .utf8)
                 check(freshReply == reply && freshArguments.contains("--session-id\n\(fresh.id.uuidString)") &&
                       !freshArguments.contains("--resume") && fresh.directory != conversation.directory,
@@ -1854,7 +2043,40 @@ enum SelfCheck {
             }
             check(!FileManager.default.fileExists(atPath: cleanupDirectory.path), "ending a conversation removes its isolated temporary working directory")
             let noContext = try JSONDecoder().decode([String: String].self, from: Data(contentsOf: fixture.appendingPathComponent("profile/request.json")))
-            check(noContext == ["prompt": prompt], "prompt CLI omits text when the editor has no cursor word")
+            check(noContext == ["prompt": prompt, "text": ""], "prompt CLI omits the target but still includes shared context for an empty editor")
+            let entries = Array(log.entries.dropFirst(initialLogCount))
+            check(entries.count == 10 && Set(entries.map(\.feature)) == ["Synonyms", "Highlights", "Conversation"] &&
+                  entries.allSatisfy { $0.response?.status == 0 && $0.error == nil },
+                  "one shared log records every synonym, highlight, and conversation request and response")
+            check(try entries[0].arguments.contains(ClaudeCLI.systemPrompt) && entries[0].arguments.contains(ClaudeCLI.schema) &&
+                  entries[5].arguments.contains(ClaudeCLI.highlightSystemPrompt) && entries[5].input == highlightContext.input(prompt: highlightPrompt) &&
+                  entries[6].input == promptContext.input(prompt: prompt) &&
+                  String(decoding: entries[6].response!.output, as: UTF8.self).contains(conversation.id.uuidString) &&
+                  entries[7].arguments.contains("--resume"),
+                  "the log retains exact system prompts, schemas, payloads, raw responses, and conversation-resume arguments")
+            do {
+                _ = try await cli.reply(to: "BAD_OUTPUT_LOG", context: promptContext, conversation: PromptConversation(), model: .haiku, effort: .low)
+                check(false, "malformed output must fail")
+            } catch PromptError.invalidResponse {
+                check(log.entries.last?.response?.output == Data("Malformed model output".utf8) &&
+                      log.entries.last?.response?.diagnostics == Data("Full diagnostic output".utf8),
+                      "malformed responses and full diagnostics remain visible in the log even when decoding fails")
+            }
+            let cancelled = Task {
+                try await cli.reply(to: "CANCEL_LOG", context: promptContext, conversation: PromptConversation(), model: .haiku, effort: .low)
+            }
+            try await Task.sleep(for: .milliseconds(150))
+            check(log.entries.last?.response == nil && log.entries.last?.input.contains("CANCEL_LOG") == true,
+                  "pending requests are logged before a response arrives")
+            cancelled.cancel()
+            do { _ = try await cancelled.value; check(false, "cancelled logged request must fail") }
+            catch is CancellationError {
+                check(log.entries.last?.error == "Cancelled." &&
+                      log.entries.last?.response?.output == Data("Partial model output".utf8) &&
+                      log.entries.last?.response?.diagnostics == Data("Partial diagnostic".utf8),
+                      "cancelled requests retain partial output and diagnostics instead of losing the exchange")
+            }
+            check(ModelSessionLog().entries.isEmpty, "a new app-session log does not restore previous requests")
             do {
                 let wrongSession = Data("""
                 {"type":"result","is_error":false,"session_id":"\(UUID())","structured_output":{"answer":"Wrong conversation."}}

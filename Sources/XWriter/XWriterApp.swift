@@ -52,6 +52,7 @@ enum XWriterApp {
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var window: NSWindow!
     private var settingsWindow: NSWindow?
+    private var modelLogWindow: NSWindow?
     private var model: ComposerModel!
     private var snapshotPath: String?
     private var contentHeight = ComposerWindowSizing.minimumHeight
@@ -139,6 +140,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         inputMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel, .beginGesture]) { [weak self] event in
             guard let self else { return event }
+            if event.type == .keyDown,
+               event.modifierFlags.intersection([.command, .control, .option, .shift]) == [.command, .shift],
+               [",", "<"].contains(event.charactersIgnoringModifiers ?? "") {
+                if !event.isARepeat { self.showModelLog() }
+                return nil
+            }
+            if let logWindow = self.modelLogWindow, event.window === logWindow {
+                if event.type == .keyDown, event.keyCode == 53 { logWindow.performClose(nil); return nil }
+                return event
+            }
             if self.model.echo.readsText, event.window === self.window {
                 if event.type == .keyDown {
                     if event.keyCode == 53 { self.model.echo.clear(); return nil }
@@ -181,6 +192,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         menuActionObserver = NotificationCenter.default.addObserver(forName: NSMenu.willSendActionNotification, object: nil, queue: .main) { [weak self] notification in
             MainActor.assumeIsolated {
                 guard let self else { return }
+                if let action = (notification.userInfo?["MenuItem"] as? NSMenuItem)?.action {
+                    if action == #selector(self.showModelLog) { return }
+                    if let logWindow = self.modelLogWindow, NSApp.keyWindow === logWindow,
+                       ["copy:", "selectAll:", "close"].contains(NSStringFromSelector(action)) { return }
+                }
                 if self.model.echo.readsText, !self.model.echo.isWaiting,
                    let item = notification.userInfo?["MenuItem"] as? NSMenuItem,
                    let action = item.action, ["undo:", "redo:", "cut:", "copy:", "paste:", "selectAll:"].contains(NSStringFromSelector(action)) {
@@ -320,6 +336,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         item("About XWriter", action: #selector(about), in: app)
         app.addItem(.separator())
         item("Settings…", action: #selector(showSettings), key: ",", in: app)
+        item("Model Log…", action: #selector(showModelLog), key: "<", in: app)
         app.addItem(.separator())
         item("Hide XWriter", action: #selector(NSApplication.hide(_:)), key: "h", in: app, target: NSApp)
         item("Hide Others", action: #selector(NSApplication.hideOtherApplications(_:)), key: "h", modifiers: [.command, .option], in: app, target: NSApp)
@@ -393,6 +410,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc private func post() { model.prepareHandoff() }
     @objc private func readPrompt() { model.readPrompt() }
     @objc private func close() { NSApp.keyWindow?.performClose(nil) }
+    @objc private func showModelLog() {
+        if modelLogWindow == nil {
+            let log = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 880, height: 640),
+                               styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+            log.title = "Model Log"
+            log.isReleasedWhenClosed = false
+            log.contentMinSize = NSSize(width: 560, height: 300)
+            let hosting = NSHostingView(rootView: ModelSessionLogView(log: model.modelLog))
+            hosting.sizingOptions = []
+            log.contentView = hosting
+            log.center()
+            modelLogWindow = log
+        }
+        modelLogWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
     @objc private func showSettings() {
         if settingsWindow == nil {
             let settings = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 680),

@@ -3,7 +3,7 @@ import Combine
 
 @MainActor
 protocol PromptService: ClaudeAuthentication {
-    func reply(to prompt: String, text: String?, conversation: PromptConversation,
+    func reply(to prompt: String, context: ModelContext, conversation: PromptConversation,
                model: ClaudeModel, effort: ClaudeEffort) async throws -> String
 }
 
@@ -55,14 +55,7 @@ final class PromptController: ObservableObject {
 
     init(service: any PromptService) { self.service = service }
 
-    static func context(text: String, selection: NSRange) -> String? {
-        guard let range = Range(selection, in: text) else { return nil }
-        if selection.length > 0 { return String(text[range]) }
-        guard let word = SynonymTarget.wordRange(text: text, selection: selection) else { return nil }
-        return (text as NSString).substring(with: word)
-    }
-
-    func send(_ prompt: String, text: String?, conversation: PromptConversation, model: ClaudeModel, effort: ClaudeEffort) {
+    func send(_ prompt: String, context: ModelContext, conversation: PromptConversation, model: ClaudeModel, effort: ClaudeEffort) {
         dismiss()
         guard !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             onError?("Type a prompt before pressing Enter.")
@@ -84,7 +77,7 @@ final class PromptController: ObservableObject {
                     guard requestID == id else { return }
                     state = .loading
                 }
-                let reply = try await service.reply(to: prompt, text: text, conversation: conversation, model: model, effort: effort)
+                let reply = try await service.reply(to: prompt, context: context, conversation: conversation, model: model, effort: effort)
                 try Task.checkCancellation()
                 guard requestID == id else { return }
                 let message = try PromptReply(answer: reply).validated()

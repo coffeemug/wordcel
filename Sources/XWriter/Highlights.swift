@@ -3,7 +3,7 @@ import Combine
 
 @MainActor
 protocol HighlightService: ClaudeAuthentication {
-    func highlights(in text: String, prompt: String, model: ClaudeModel, effort: ClaudeEffort) async throws -> HighlightMatches
+    func highlights(context: ModelContext, prompt: String, model: ClaudeModel, effort: ClaudeEffort) async throws -> HighlightMatches
 }
 
 enum HighlightError: LocalizedError {
@@ -92,11 +92,12 @@ final class HighlightController: ObservableObject {
         if activeButtonID == button.id { dismiss(); return }
         dismiss()
         guard button.isConfigured else { onError?("Set a name and prompt for this button in Settings."); return }
-        guard !editor.hasMarkedText(), !editor.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            onError?("Write some text in the post before running a highlighting prompt.")
+        guard !editor.hasMarkedText(),
+              let context = ModelContext.capture(text: editor.string, selection: editor.selectedRange()),
+              !context.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            onError?("Place the cursor in a paragraph with text, or select text to highlight.")
             return
         }
-        let source = editor.string
         let id = UUID()
         self.editor = editor
         editor.highlightStyle = button.style
@@ -117,11 +118,14 @@ final class HighlightController: ObservableObject {
                     guard requestID == id else { return }
                     state = .loading
                 }
-                let matches = try await service.highlights(in: source, prompt: button.prompt, model: model, effort: effort)
+                let matches = try await service.highlights(context: context, prompt: button.prompt, model: model, effort: effort)
                 try Task.checkCancellation()
                 guard requestID == id else { return }
                 guard editor.window != nil else { dismiss(); return }
-                ranges = pendingEdits.reduce(try matches.ranges(in: source)) { $1.applying(to: $0) }
+                let capturedRanges = try matches.ranges(in: context.text).map {
+                    NSRange(location: context.range.location + $0.location, length: $0.length)
+                }
+                ranges = pendingEdits.reduce(capturedRanges) { $1.applying(to: $0) }
                 pendingEdits = []
                 editor.highlightRanges = ranges
                 editor.refreshHighlights()

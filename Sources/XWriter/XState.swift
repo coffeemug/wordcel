@@ -116,6 +116,7 @@ final class ComposerModel: ObservableObject {
     let toolbarSettings: PromptToolbarSettings
     let highlights: HighlightController
     let prompts: PromptController
+    let modelLog = ModelSessionLog()
     let echo = EchoBuffer()
     private let preferences: UserDefaults
     private var saveWork: DispatchWorkItem?
@@ -136,7 +137,7 @@ final class ComposerModel: ObservableObject {
         let base = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("XWriter", isDirectory: true)
         storage = DraftStorage(directory: base)
-        let cli = ClaudeCLI(configurationDirectory: base.appendingPathComponent("claude-code"))
+        let cli = ClaudeCLI(configurationDirectory: base.appendingPathComponent("claude-code"), log: modelLog)
         synonyms = SynonymController(service: synonymService ?? cli)
         highlights = HighlightController(service: highlightService ?? cli)
         prompts = PromptController(service: promptService ?? cli)
@@ -179,11 +180,14 @@ final class ComposerModel: ObservableObject {
             notify("Place the cursor in a post before entering a prompt.")
             return
         }
-        let text = PromptController.context(text: editor.string, selection: editor.selectedRange())
+        guard let context = ModelContext.capture(text: editor.string, selection: editor.selectedRange()) else {
+            notify("Select text or place the cursor in a paragraph before entering a prompt.")
+            return
+        }
         let conversation = PromptConversation()
         echo.read(onSubmit: { [weak self] prompt in
             guard let self else { return }
-            prompts.send(prompt, text: text, conversation: conversation, model: synonymModel, effort: synonymEffort)
+            prompts.send(prompt, context: context, conversation: conversation, model: synonymModel, effort: synonymEffort)
         }, onDismiss: { [weak self] in self?.prompts.dismiss() })
     }
 

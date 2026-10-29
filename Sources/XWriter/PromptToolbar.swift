@@ -322,7 +322,7 @@ private struct PromptButtonEditor: View {
                     .scrollContentBackground(.hidden).padding(8).frame(height: 140)
                     .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.border))
                     .accessibilityLabel("Highlighting prompt")
-                Text("Describe what to highlight. The app supplies the entire active post and handles the output format; you don't need to write JSON.")
+                Text("Describe what to highlight. The app supplies the cursor word or selection and its paragraph. A selection spanning paragraphs is analyzed on its own. Highlights stay within that context; you don't need to write JSON.")
                     .font(.system(size: 12)).foregroundStyle(Theme.secondary)
                 Divider().padding(.vertical, 4)
                 HighlightStyleEditor(style: $button.style, onError: onError)

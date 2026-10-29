@@ -1,6 +1,5 @@
 import AppKit
 import Combine
-import NaturalLanguage
 
 struct SynonymLists: Codable, Equatable {
     static let maximumCount = 12
@@ -21,38 +20,18 @@ struct SynonymLists: Codable, Equatable {
 }
 
 struct SynonymTarget {
-    let text: String
+    let context: ModelContext
+    let query: String
     let range: NSRange
-    var query: String { (text as NSString).substring(with: range) }
-    var sentence: String {
-        let tokenizer = NLTokenizer(unit: .sentence)
-        tokenizer.string = text
-        let start = String.Index(utf16Offset: range.location, in: text)
-        let end = text.index(before: String.Index(utf16Offset: NSMaxRange(range), in: text))
-        let sentences = tokenizer.tokenRange(at: start).lowerBound..<tokenizer.tokenRange(at: end).upperBound
-        return String(text[sentences]).trimmingCharacters(in: .whitespacesAndNewlines)
-    }
 
     static func capture(text: String, selection: NSRange) -> SynonymTarget? {
-        guard let selectedRange = Range(selection, in: text) else { return nil }
-        if let range = wordRange(text: text, selection: selection) {
-            guard range.length <= 100 else { return nil }
-            return SynonymTarget(text: text, range: range)
-        }
-        let phrase = String(text[selectedRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let context = ModelContext.capture(text: text, selection: selection),
+              let target = context.target, let targetRange = context.targetRange,
+              selection.length > 0 || targetRange.length <= 100 else { return nil }
+        let phrase = target.trimmingCharacters(in: .whitespacesAndNewlines)
         guard phrase.unicodeScalars.contains(where: CharacterSet.letters.contains) else { return nil }
-        let phraseRange = (text as NSString).range(of: phrase, options: .literal, range: selection)
-        return SynonymTarget(text: text, range: phraseRange)
-    }
-
-    static func wordRange(text: String, selection: NSRange) -> NSRange? {
-        let tokenizer = NLTokenizer(unit: .word)
-        tokenizer.string = text
-        let words = tokenizer.tokens(for: text.startIndex..<text.endIndex)
-            .filter { text[$0].unicodeScalars.contains(where: CharacterSet.letters.contains) }
-            .map { NSRange($0, in: text) }
-        return words.first { $0.location <= selection.location && selection.location < NSMaxRange($0) && NSMaxRange(selection) <= NSMaxRange($0) }
-            ?? words.first { selection.length == 0 && NSMaxRange($0) == selection.location }
+        let phraseRange = (text as NSString).range(of: phrase, options: .literal, range: targetRange)
+        return SynonymTarget(context: context, query: phrase, range: phraseRange)
     }
 
     func matches(text: String, selection: NSRange) -> Bool {
@@ -121,7 +100,7 @@ final class SynonymController: ObservableObject {
                     NSApp.activate(ignoringOtherApps: true)
                     state = .loading
                 }
-                let lists = try await service.synonyms(for: target.query, in: target.sentence, model: model, effort: effort).validated()
+                let lists = try await service.synonyms(context: target.context, model: model, effort: effort).validated()
                 try Task.checkCancellation()
                 guard requestID == id else { return }
                 guard target.matches(editor) else { dismiss(); return }
