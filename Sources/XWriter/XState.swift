@@ -217,6 +217,16 @@ final class ComposerModel: ObservableObject {
         activePostID = draft.posts[0].id
     }
 
+    func requestDeleteDraft(_ id: UUID) {
+        guard drafts.contains(where: { $0.id == id }) else {
+            notify("This draft is no longer available.")
+            return
+        }
+        echo.confirm("Delete this draft from this Mac? (y/n)") { [weak self] in
+            self?.deleteDraft(id)
+        }
+    }
+
     func deleteDraft(_ id: UUID) {
         let previousDraft = draft
         let previousDrafts = drafts

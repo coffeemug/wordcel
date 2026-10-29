@@ -60,12 +60,14 @@ struct GrowingTextView: NSViewRepresentable {
 
     private func configure(_ view: ComposerTextView, coordinator: Coordinator) {
         view.onFocusRequest = { [weak model, weak view] in
-            guard let model, let view, model.activePostID == postID else { return }
+            guard let model, let view, model.activePostID == postID, !model.echo.expectsInput else { return }
             view.window?.makeFirstResponder(view)
         }
         view.onFocus = { [weak model, weak view] in
-            model?.activePostID = postID
-            model?.activeEditor = view
+            guard let model, let view, view.window?.firstResponder === view,
+                  model.draft.posts.contains(where: { $0.id == postID }) else { return }
+            model.activePostID = postID
+            model.activeEditor = view
         }
         view.onSubmit = { [weak model] in model?.prepareHandoff() }
         view.onSynonymLookup = { [weak model, weak view] in

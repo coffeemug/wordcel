@@ -126,8 +126,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.center()
         if !isTesting { window.setFrameAutosaveName("XWriterComposer") }
         window.makeKeyAndOrderFront(nil)
+        model.echo.onInputChange = { [weak self] expectsInput in
+            guard let self else { return }
+            if expectsInput {
+                self.window.makeFirstResponder(nil)
+            } else if let editor = self.model.activeEditor, editor.window === self.window {
+                self.window.makeFirstResponder(editor)
+            }
+        }
         inputMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel, .beginGesture]) { [weak self] event in
             guard let self else { return event }
+            if event.type == .keyDown, event.window === self.window, self.model.echo.expectsInput {
+                if event.keyCode == 53 {
+                    self.model.echo.clear()
+                } else if !event.isARepeat, event.modifierFlags.intersection([.command, .control, .option]).isEmpty,
+                          let answer = event.charactersIgnoringModifiers?.lowercased(), answer == "y" || answer == "n" {
+                    self.model.echo.respond(yes: answer == "y")
+                } else {
+                    self.model.echo.rejectInput()
+                }
+                return nil
+            }
             let hadMessage = self.model.echo.message != nil
             self.model.echo.clear()
             guard event.type == .keyDown, event.window === self.window else { return event }

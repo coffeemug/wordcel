@@ -36,7 +36,6 @@ struct ModelPicker: View {
 
 struct DraftsView: View {
     @ObservedObject var model: ComposerModel
-    @ViewState<Draft?> private var deleting = nil
     var body: some View {
         VStack(spacing: 0) {
             HStack {
@@ -70,8 +69,8 @@ struct DraftsView: View {
                                         }
                                     }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
                                 }.buttonStyle(.plain)
-                                Button { deleting = item } label: { Image(systemName: "trash").font(.system(size: 14)) }
-                                    .buttonStyle(RoundButtonStyle()).foregroundStyle(Theme.secondary).help("Delete draft")
+                                Button { model.requestDeleteDraft(item.id) } label: { Image(systemName: "trash").font(.system(size: 14)) }
+                                    .buttonStyle(RoundButtonStyle()).focusable(false).foregroundStyle(Theme.secondary).help("Delete draft")
                                     .accessibilityLabel("Delete draft")
                             }.padding(16)
                                 .background(item.id == model.draft.id ? Theme.blue.opacity(0.06) : .clear)
@@ -85,10 +84,6 @@ struct DraftsView: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Drafts")
         .accessibilityIdentifier("drafts-drawer")
-        .alert("Delete this draft?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })) {
-            Button("Cancel", role: .cancel) { deleting = nil }
-            Button("Delete", role: .destructive) { if let item = deleting { model.deleteDraft(item.id) }; deleting = nil }
-        } message: { Text("This will remove the draft from this Mac.") }
     }
 }
 

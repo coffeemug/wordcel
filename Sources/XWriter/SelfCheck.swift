@@ -239,6 +239,7 @@ enum SelfCheck {
             await settle()
             require(model.showDrafts && model.draft.posts[0].text == "First post", "switching drafts keeps drawer open")
             require(model.activeEditor === window.firstResponder, "restored draft receives editor focus")
+            await drawerDeletionInterface(model: model, window: window) { require($0, $1) }
             window.setContentSize(NSSize(width: 1000, height: window.contentView!.bounds.height))
             window.delegate?.windowDidEndLiveResize?(Notification(name: NSWindow.didEndLiveResizeNotification, object: window))
             await settle()
@@ -442,10 +443,30 @@ enum SelfCheck {
             check(model.showDrafts, "loading a draft keeps drawer open")
             model.removePost(model.draft.posts[1].id)
             check(model.draft.posts.count == 1 && model.activePostID == model.draft.posts[0].id, "remove thread post")
-            model.deleteDraft(firstID)
+            model.requestDeleteDraft(firstID)
+            check(model.echo.expectsInput && model.echo.message?.contains("(y/n)") == true && model.drafts.contains(where: { $0.id == firstID }),
+                  "requesting deletion asks in the echo area without deleting")
+            check(model.echo.respond(yes: false) && !model.echo.expectsInput && model.draft.id == firstID && model.echo.message == nil,
+                  "a negative answer cancels deletion")
+            model.requestDeleteDraft(firstID)
+            model.echo.clear()
+            check(!model.echo.expectsInput && !model.echo.respond(yes: true) && model.draft.id == firstID, "clearing a prompt cancels its pending deletion")
+            model.requestDeleteDraft(firstID)
+            model.notify("A newer message")
+            check(!model.echo.expectsInput && !model.echo.respond(yes: true) && model.draft.id == firstID, "a replacement message cannot leave a hidden deletion pending")
+            model.requestDeleteDraft(firstID)
+            check(model.echo.respond(yes: true) && !model.echo.respond(yes: true), "affirmative confirmation performs the deletion exactly once")
             check(!model.draft.hasContent && model.drafts.count == 1, "delete current draft")
             let afterDelete = try store.read()
             check(afterDelete.drafts.allSatisfy { $0.id != firstID }, "deletion persists")
+            let remainingID = model.drafts[0].id
+            try FileManager.default.removeItem(at: store.file)
+            try FileManager.default.createDirectory(at: store.file, withIntermediateDirectories: false)
+            model.requestDeleteDraft(remainingID)
+            check(model.echo.respond(yes: true) && model.drafts.contains(where: { $0.id == remainingID }) &&
+                  model.echo.message?.hasPrefix("Couldn't save your draft:") == true,
+                  "failed confirmed deletion rolls back and keeps its error in the echo area")
+            try FileManager.default.removeItem(at: store.file)
             try Data("bad json".utf8).write(to: store.file)
             let protected = ComposerModel(directory: directory, preferences: preferences)
             check(protected.echo.message != nil && !protected.save(), "corrupt storage is protected and reported in the echo area")
@@ -611,6 +632,89 @@ enum SelfCheck {
             unreadable.reset()
             check(!unreadable.isReadOnly && PromptToolbarSettings(preferences: defaults).buttons.count == 2, "explicit reset repairs toolbar settings")
         } catch { check(false, "highlight model check failed: \(error)") }
+    }
+
+    @MainActor private static func drawerDeletionInterface(model: ComposerModel, window: NSWindow,
+                                                          check: (Bool, String) -> Void) async {
+        func settle() async { try? await Task.sleep(for: .milliseconds(300)) }
+        func click(_ point: NSPoint) async {
+            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
+                                              timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                                              context: nil, eventNumber: 0, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0)!
+                NSApp.postEvent(event, atStart: false)
+            }
+            await settle()
+        }
+        func request() async {
+            await click(NSPoint(x: window.contentView!.bounds.width - 33, y: window.contentView!.bounds.height - 86))
+        }
+        func press(_ text: String, code: UInt16, modifiers: NSEvent.ModifierFlags = [], repeating: Bool = false,
+                   delay: Duration = .milliseconds(300)) async {
+            let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers,
+                                        timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                                        context: nil, characters: text, charactersIgnoringModifiers: text, isARepeat: repeating, keyCode: code)!
+            NSApp.postEvent(event, atStart: false)
+            try? await Task.sleep(for: delay)
+        }
+        guard let editor = model.activeEditor else { check(false, "drawer deletion has an editor"); return }
+        let id = model.draft.id
+        let text = editor.string
+        let frame = window.frame
+        let selection = editor.selectedRange()
+        await request()
+        editor.onFocusRequest?()
+        check(model.echo.message?.contains("(y/n)") == true && model.drafts.contains(where: { $0.id == id }) &&
+              window.attachedSheet == nil && NSApp.modalWindow == nil && window.frame == frame && window.firstResponder !== editor,
+              "a drawer question removes editor focus without a dialog, resize, or deletion, even after a queued focus request")
+        let question = model.echo.message
+        let visiblePrompt = echoSnapshot(in: window)
+        await press("x", code: 7, delay: .milliseconds(100))
+        check(model.echo.expectsInput && model.echo.message == question && editor.string == text &&
+              editor.selectedRange() == selection && window.firstResponder !== editor,
+              "unrelated typing leaves the question active without editing or moving the cursor")
+        check(visiblePrompt != nil && echoSnapshot(in: window) != visiblePrompt, "invalid input visibly blinks the question")
+        await settle()
+        check(echoSnapshot(in: window) == visiblePrompt, "the question returns to full visibility after blinking")
+        await press("n", code: 45)
+        check(model.echo.message == nil && model.draft.id == id && editor.string == text &&
+              window.firstResponder === editor && editor.selectedRange() == selection,
+              "N cancels and restores editor focus and selection without typing into the post")
+        await request()
+        let invalidKeys: [(String, UInt16, NSEvent.ModifierFlags, Bool)] = [
+            ("n", 45, .command, false), ("y", 16, .command, false), ("y", 16, .option, false),
+            ("\t", 48, [], false), ("\u{f702}", 123, [], false), ("\r", 36, [], false),
+            ("\u{7f}", 51, [], false), (" ", 49, .control, false), ("y", 16, [], true)
+        ]
+        for (characters, code, modifiers, repeating) in invalidKeys {
+            await press(characters, code: code, modifiers: modifiers, repeating: repeating)
+            check(model.echo.expectsInput && model.echo.message == question && model.draft.id == id &&
+                  editor.string == text && editor.selectedRange() == selection &&
+                  window.firstResponder !== editor && !model.showHandoff && model.synonyms.state == .idle,
+                  "invalid key \(code) with modifiers \(modifiers.rawValue) cannot edit, move focus, run commands, or answer")
+        }
+        await press("\u{1b}", code: 53)
+        check(model.echo.message == nil && model.draft.id == id && editor.string == text &&
+              window.firstResponder === editor && editor.selectedRange() == selection,
+              "Escape cancels the question and restores editor focus and selection")
+        await request()
+        model.notify("A newer message")
+        await settle()
+        check(!model.echo.expectsInput && model.echo.message == "A newer message" && window.firstResponder === editor &&
+              !model.echo.respond(yes: true), "replacing a question restores editor focus and cancels its response")
+        await request()
+        await click(editor.convert(NSPoint(x: 12, y: 12), to: nil))
+        check(!model.echo.expectsInput && model.echo.message == nil && model.draft.id == id && window.firstResponder === editor,
+              "clicking the input box dismisses the question and focuses the editor")
+        let editedText = (text as NSString).replacingCharacters(in: editor.selectedRange(), with: "x")
+        await press("x", code: 7)
+        check(editor.string == editedText && model.draft.id == id, "typing after clicking the input box edits normally")
+        editor.insertText(text, replacementRange: NSRange(location: 0, length: (editor.string as NSString).length))
+        await request()
+        await press("Y", code: 16, modifiers: .shift)
+        check(model.echo.message == nil && !model.drafts.contains(where: { $0.id == id }) && !model.draft.hasContent &&
+              model.showDrafts && window.firstResponder === model.activeEditor,
+              "Y deletes the requested draft without typing Y, restores editor focus, and leaves the drawer open")
     }
 
     @MainActor private static func highlightInterface(model: ComposerModel, window: NSWindow, service: HighlightStub,
