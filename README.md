@@ -57,7 +57,9 @@ If macOS intercepts **⌃Space** to switch input sources, change or disable that
 
 ## Highlighting buttons
 
-Open **Settings (⌘,)** to add or remove toolbar buttons, edit their names and prompts, and choose from 41 monochrome icons built from SF Symbols. Drag rows to reorder them. Two editable examples are included: **Latin words** (the same laurel as synonyms) and **Removable wording** (scissors). Settings save automatically across restarts. New buttons stay disabled until they have a name and prompt; an empty toolbar offers an “Add buttons…” link.
+Open **Settings (⌘,)** to add or remove toolbar buttons, edit their names and prompts, and choose from 46 monochrome icons built from SF Symbols. Drag rows to reorder them. Two editable examples are included: **Latin words** (the same laurel as synonyms) and **Removable wording** (scissors). Settings save automatically across restarts. New buttons stay disabled until they have a name and prompt; an empty toolbar offers an “Add buttons…” link.
+
+The icon picker also includes **Worn metaphors** (recycled arrows), **Inflated verbs** (balloon), **Pretentious phrases** (crown), **Meaningless words** (question-mark speech bubble), and **Pessimism** (rain cloud). Hover over an icon to see its tool name. These are additional choices; existing buttons keep their selected icons.
 
 Each button also has its own **Highlight style** with a live preview: optional font color, solid strikethrough, no/solid/dotted/wiggly underline with its own color, and optional background color. Color pickers support opacity. Latin words default to a blue solid underline with unchanged text and no background; removable wording defaults to icon-gray text and strikethrough with no background. Existing example buttons receive these styles on upgrade without changing their prompts or icons; other existing buttons retain a yellow background. Saved custom styles are never replaced by the defaults. Changing a style updates current or pending results without another model call.
 

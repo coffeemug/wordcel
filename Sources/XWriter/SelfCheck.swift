@@ -736,6 +736,9 @@ enum SelfCheck {
                   defaults.data(forKey: PromptToolbarSettings.preferenceKey) == invalidData,
                   "invalid saved color components are reported without overwriting settings")
             settings.buttons.append(PromptButton(name: "Custom", icon: .fish, prompt: "Highlight concrete nouns."))
+            for icon in [PromptIcon.wornMetaphors, .inflatedVerbs, .pretentiousPhrases, .meaninglessWords, .pessimism] {
+                settings.buttons.append(PromptButton(name: icon.title, icon: icon, prompt: "Highlight \(icon.title.lowercased())."))
+            }
             settings.buttons[0].prompt = "Highlight verbs."
             settings.buttons.swapAt(0, 2)
             let restored = PromptToolbarSettings(preferences: preferences(for: directory))

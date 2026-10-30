@@ -8,6 +8,8 @@ enum PromptIcon: String, Codable, CaseIterable, Identifiable {
     case search = "text.magnifyingglass", list = "list.bullet", filter = "line.3.horizontal.decrease"
     case speech = "bubble.left", quote = "quote.bubble", question = "questionmark.circle"
     case warning = "exclamationmark.triangle", check = "checkmark.circle", clock
+    case wornMetaphors = "arrow.3.trianglepath", inflatedVerbs = "balloon", pretentiousPhrases = "crown"
+    case meaninglessWords = "questionmark.bubble", pessimism = "cloud.rain"
 
     var id: String { rawValue }
     var symbolNames: [String] {
@@ -31,6 +33,11 @@ enum PromptIcon: String, Codable, CaseIterable, Identifiable {
         case .question: return "Question"
         case .warning: return "Warning"
         case .check: return "Check"
+        case .wornMetaphors: return "Worn metaphors"
+        case .inflatedVerbs: return "Inflated verbs"
+        case .pretentiousPhrases: return "Pretentious phrases"
+        case .meaninglessWords: return "Meaningless words"
+        case .pessimism: return "Pessimism"
         default: return rawValue.capitalized
         }
     }
